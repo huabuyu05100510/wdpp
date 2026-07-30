@@ -1,0 +1,33 @@
+{
+  "name": "wdpp",
+  "version": "0.1.0",
+  "description": "Web Data Provenance - API 字段->DOM 值血缘追踪,值级第一性原理,框架无关",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js",
+    "./stamp-origin": "./src/stamp-origin.js",
+    "./value-index": "./src/value-index.js",
+    "./dom-sink": "./src/dom-sink.js",
+    "./graph": "./src/graph.js",
+    "./babel-runtime": "./src/babel-runtime.js",
+    "./devtools": "./src/devtools.js",
+    "./babel-plugin": "./babel/plugin.js"
+  },
+  "main": "./src/index.js",
+  "types": "./types.d.ts",
+  "scripts": {
+    "test": "node --test test/conformance.js test/l1.conformance.js test/dom.conformance.js test/p0-fixes.js test/protocol.conformance.js",
+    "bench": "node bench/bench-overhead.js && node bench/bench-recall.js && node bench/bench-memory.js && node bench/bench-realistic.js"
+  },
+  "keywords": ["provenance", "taint-tracking", "data-flow", "react", "devtools", "debugging", "wdpp", "dom", "api"],
+  "license": "MIT",
+  "peerDependencies": {
+    "@babel/core": "^7.0.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.24.0",
+    "@babel/preset-react": "^7.24.0",
+    "@babel/types": "^7.24.0",
+    "jsdom": "^24.0.0"
+  }
+}

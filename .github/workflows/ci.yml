@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Install dependencies
+        working-directory: impl/l0
+        run: npm install --legacy-peer-deps
+      - name: Run conformance tests (44 cases)
+        working-directory: impl/l0
+        run: npm test
+      - name: Run benchmarks
+        working-directory: impl/l0
+        run: npm run bench
+        continue-on-error: true  # bench 不阻塞 CI(仅收集数据)
+
+  react-demo-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install L0 runtime deps
+        working-directory: impl/l0
+        run: npm install --legacy-peer-deps
+      - name: Install React demo deps
+        working-directory: impl/l0/demo-react
+        run: npm install --legacy-peer-deps
+      - name: Build React demo
+        working-directory: impl/l0/demo-react
+        run: npx vite build
