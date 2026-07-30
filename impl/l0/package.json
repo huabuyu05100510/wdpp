@@ -19,7 +19,17 @@
     "test": "node --test test/conformance.js test/l1.conformance.js test/dom.conformance.js test/p0-fixes.js test/protocol.conformance.js",
     "bench": "node bench/bench-overhead.js && node bench/bench-recall.js && node bench/bench-memory.js && node bench/bench-realistic.js"
   },
-  "keywords": ["provenance", "taint-tracking", "data-flow", "react", "devtools", "debugging", "wdpp", "dom", "api"],
+  "keywords": [
+    "provenance",
+    "taint-tracking",
+    "data-flow",
+    "react",
+    "devtools",
+    "debugging",
+    "wdpp",
+    "dom",
+    "api"
+  ],
   "license": "MIT",
   "peerDependencies": {
     "@babel/core": "^7.0.0"
@@ -28,6 +38,6 @@
     "@babel/core": "^7.24.0",
     "@babel/preset-react": "^7.24.0",
     "@babel/types": "^7.24.0",
-    "jsdom": "^24.0.0"
+    "jsdom": "^24.1.3"
   }
 }
