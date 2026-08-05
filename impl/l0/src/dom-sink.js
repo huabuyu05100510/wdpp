@@ -141,14 +141,31 @@ function isTextNode(node) {
 }
 
 // 拼接相邻文本兄弟查询。挂载规则:仅文本节点、单值 miss 时、同一父元素下相邻文本、不跨元素边界
+// P1 修复:原实现从 parent.firstChild 累积,会把无关前缀也拼进去(误命中)。
+// 改为:从 node 自身向前回溯(到上一个 Element 停止) + 向后遍历(到下一个 Element 停止),
+//      只拼接真正相邻的兄弟文本节点,不包含无关前缀。
 function tryConcatAdjacent(node) {
   const parent = node.parentNode;
   if (!parent) return null;
-  let combined = '';
-  for (let n = parent.firstChild; n; n = n.nextSibling) {
+  if (node.nodeType !== 3) return null; // 仅文本节点
+
+  // 向后拼接:从 node.nextSibling 开始,到第一个 Element 停止
+  let combined = node.nodeValue;
+  let n = node.nextSibling;
+  while (n) {
     if (n.nodeType === 3) combined += n.nodeValue;
-    else if (n.nodeType === 1) { combined = ''; } // 遇元素重置(不跨元素边界)
+    else break; // 遇元素边界停止
+    n = n.nextSibling;
   }
+
+  // 向前回溯:从 node.previousSibling 开始,到第一个 Element 停止
+  n = node.previousSibling;
+  while (n) {
+    if (n.nodeType === 3) combined = n.nodeValue + combined;
+    else break; // 遇元素边界停止
+    n = n.previousSibling;
+  }
+
   if (combined === node.nodeValue) return null; // 没有兄弟,拼了也等于自己
   return getStamp(combined);
 }

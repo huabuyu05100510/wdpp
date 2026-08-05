@@ -173,6 +173,7 @@ export async function bindFiberCommit(root) {
     if (reads && reads.length) {
       const host = findHost(f);
       if (host) {
+        // fiberReads 是 Array([obj, key]),addFiberRead 内部线性去重
         for (const [obj, key] of reads) {
           let slot = (obj != null && typeof obj === 'object') ? smGet(obj, key) : 0n; // SM 字段护照(含低熵)
           if (!slot && obj != null && typeof obj === 'object') {

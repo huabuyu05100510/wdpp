@@ -49,8 +49,22 @@ export function __autoDetectReact() {
 // fiber 读取记录:render 时 __readProp 记"当前 fiber 读了哪些 [obj,key]",commit 期读取方按 fiber 反查。
 // 用 WeakMap 而非 fiber.__wdppReads -- React 18.3 fiber 不可扩展(Object.isExtensible=false),
 // 直接挂属性抛 "Cannot add property __wdppReads, object is not extensible";WeakMap 不要求可扩展 + 不污染 fiber + fiber GC 自清。
+//
+// P1 修复:fiberReads 内部用 Array,添加时线性去重(防 Set<[obj,key]> 引用陷阱)。
+// React 18+ Concurrent 模式下,fiber 可能被打断后重新渲染,同一 [obj,key] 被 __readProp 多次调用。
+// 注:不能用 Set<[obj,key]> -- Set 用引用相等比较 array,每次创建的 [obj,key] 数组都是新对象,Set 不去重。
 const fiberReads = new WeakMap();
 export function getFiberReads(fiber) { return fiberReads.get(fiber) ?? null; }
+
+// 添加 fiber read,内部线性去重(reads 通常 < 100 项,O(n) 可接受)
+function addFiberRead(fiber, obj, key) {
+  let reads = fiberReads.get(fiber);
+  if (!reads) { reads = []; fiberReads.set(fiber, reads); }
+  for (const entry of reads) {
+    if (entry[0] === obj && entry[1] === key) return; // 已存在,跳过
+  }
+  reads.push([obj, key]);
+}
 
 // 仅登记原始值;对象(element/组件返回值)不登记(跨组件边界,L2 处理)
 function ctrlAdd(r, passport) {
@@ -192,9 +206,8 @@ export function __readProp(obj, key) {
   }
   const f = __getCurrentFiber();
   if (f && obj != null) {
-    let reads = fiberReads.get(f);
-    if (!reads) { reads = []; fiberReads.set(f, reads); }
-    reads.push([obj, key]);
+    // P1 修复:线性去重 addFiberRead(替代 Set<[obj,key]>,后者因 array 引用不等不能去重)
+    addFiberRead(f, obj, key);
   }
   return val;
 }
