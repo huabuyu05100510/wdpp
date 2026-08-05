@@ -11,11 +11,12 @@ import { __autoDetectReact, __setRCO } from './babel-runtime.js';
 import { autoStartIframePatch } from './iframe-patch.js';
 import { startL1Monkeypatch } from './l1-monkeypatch.js';
 import { defaultGraph, defaultGraphManager, GraphManager, ProvenanceGraph } from './graph-v2.js';
+import { startBlackbox } from './blackbox.js';
 
 const subscribers = new Set();
 let lastBatch = null;
 
-export function install({ expose = false, overlay = false, react = 'auto', l1 = 'off' } = {}) {
+export function install({ expose = false, overlay = false, react = 'auto', l1 = 'off', blackbox = 'auto' } = {}) {
   // P0 修复:React 版本自动检测(支持 React 18+ __CLIENT_INTERNALS 与 React 17- ReactCurrentOwner)
   // react='auto'   → 自动检测
   // react='manual' → 跳过检测,host 自己调 __setRCO()
@@ -41,6 +42,11 @@ export function install({ expose = false, overlay = false, react = 'auto', l1 = 
   if (typeof window !== 'undefined') {
     // P0 扩展:自动 patch iframe 上下文(per-context fetch + DOM)
     autoStartIframePatch();
+    // 黑盒处理:Canvas / WebGL / Worker
+    // blackbox='auto' | 'on' | 'off'
+    if (blackbox === 'auto' || blackbox === 'on') {
+      startBlackbox();
+    }
   }
   if (expose && typeof window !== 'undefined') {
     window.__wdpp__ = {
