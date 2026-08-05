@@ -181,11 +181,26 @@ export default function wdppPlugin({ types: t }, opts = {}) {
         path.replaceWith(t.callExpression(t.identifier('__aggr'), [t.clone(path.node)]));
       },
 
-      // 3d. 一元 -a/+a/~a:产新值 -> __recover(op a,[a])。!/typeof/void/delete 不传(布尔/丢弃)
+      // 3d. 一元 -a/+a/~a:产新值 -> __recover(op a,[a])。!/typeof/void 不传(布尔/丢弃)
+      //     P3:delete obj.x 走 __deleteField(operator: 'delete')
       UnaryExpression(path) {
         if (isRecoverArg(path)) return;
         const op = path.node.operator;
-        if (op === '!' || op === 'typeof' || op === 'void' || op === 'delete') return;
+        // delete obj.x → __deleteField
+        if (op === 'delete') {
+          const arg = path.node.argument;
+          if (!t.isMemberExpression(arg)) return;
+          const obj = arg.object;
+          const key = arg.computed
+            ? arg.property
+            : t.stringLiteral(arg.property.name);
+          path.replaceWith(t.callExpression(t.identifier('__deleteField'), [
+            t.clone(obj),
+            key,
+          ]));
+          return;
+        }
+        if (op === '!' || op === 'typeof' || op === 'void') return;
         path.replaceWith(t.callExpression(t.identifier('__recover'), [
           t.clone(path.node),
           t.arrayExpression([t.clone(path.node.argument)]),
@@ -385,7 +400,27 @@ export default function wdppPlugin({ types: t }, opts = {}) {
         // 左值 / callee / 链式内层 不包。callee 用 path.key(结构键,跨多趟 transform 稳)而非 node 引用(克隆后易失效)
         if (path.parentPath.isCallExpression() && (path.key === 'callee' || path.parentPath.node.callee === path.node)) return;
         if (path.parentPath.isMemberExpression()) return;
-        if (t.isAssignmentExpression(path.parent) && path.parent.left === path.node) return;
+
+        // P3:作为赋值 left 的 MemberExpression(obj.x = y) → __writeField
+        if (t.isAssignmentExpression(path.parent) && path.parent.left === path.node) {
+          const obj = path.node.object;
+          const key = path.node.computed
+            ? path.node.property
+            : t.stringLiteral(path.node.property.name);
+          let value = path.parent.right;
+          // 复合赋值 += / -= / *= 等:还原成 obj[key] op value
+          const op = path.parent.operator;
+          if (op !== '=') {
+            const lhsClone = t.clone(path.node); // obj[key]
+            value = t.binaryExpression(op.slice(0, -1), lhsClone, t.clone(value));
+          }
+          path.parentPath.replaceWith(t.callExpression(t.identifier('__writeField'), [
+            t.clone(obj),
+            key,
+            value,
+          ]));
+          return;
+        }
         if (t.isUpdateExpression(path.parent) && path.parent.argument === path.node) return;
         if (path.node.computed) {
           // obj[key]:key 选择了 result -> __fieldGet(obj,key),key 只读一次
@@ -470,24 +505,7 @@ export default function wdppPlugin({ types: t }, opts = {}) {
         ]));
       },
 
-      // 9. MemberExpression 写:obj.x = y / obj[k] = y → __writeField(obj, key, y)
-      // 字段突变:field taint 继承 y
-      MemberExpression(path) {
-        if (isRecoverArg(path)) return;
-        const parent = path.parentPath;
-        // 只处理作为赋值 left 的 MemberExpression
-        if (!parent.isAssignmentExpression() || parent.node.left !== path.node) return;
-        const obj = path.node.object;
-        const key = path.node.computed
-          ? path.node.property
-          : t.stringLiteral(path.node.property.name);
-        const value = parent.node.right;
-        parent.replaceWith(t.callExpression(t.identifier('__writeField'), [
-          t.clone(obj),
-          key,
-          t.clone(value),
-        ]));
-      },
+      // 9. MemberExpression 写(已合并到上方 MemberExpression visitor 处理)
 
       // 10. ObjectPattern 解构:const { a, b } = obj → 展开为多个 __readField
       // 数组解构:const [a, b] = arr → __readField(arr, '0') 等
@@ -515,7 +533,13 @@ export default function wdppPlugin({ types: t }, opts = {}) {
         if (!stmts.length) return;
         // 替换为多个 variableDeclarator
         const newDecl = t.variableDeclaration('const', stmts);
-        path.parentPath.replaceWith(newDecl);
+        // 替换 VariableDeclaration 整体(避免重复 const)
+        // path 是 ObjectPattern,path.parentPath 是 VariableDeclarator,grandparent 是 VariableDeclaration
+        if (path.parentPath.parentPath && path.parentPath.parentPath.isVariableDeclaration()) {
+          path.parentPath.parentPath.replaceWith(newDecl);
+        } else {
+          path.parentPath.replaceWith(newDecl);
+        }
       },
 
       // 11. ThrowStatement:throw x → throw __throw(x)
@@ -534,41 +558,9 @@ export default function wdppPlugin({ types: t }, opts = {}) {
       //      扩展现有 LogicalExpression visitor 处理 operator === '??'
       //      (新代码写在 LogicalExpression 内,见下面 visitor 重写)
 
-      // 14. UnaryExpression(operator: 'delete'):delete obj.x → __deleteField(obj, 'x')
-      //    (Babel 中 delete 是 UnaryExpression,Babel 7 不再有 DeleteExpression 类型)
-      UnaryExpression(path) {
-        if (path.node.operator !== 'delete') return;
-        const arg = path.node.argument;
-        if (!t.isMemberExpression(arg)) return;
-        const obj = arg.object;
-        const key = arg.computed
-          ? arg.property
-          : t.stringLiteral(arg.property.name);
-        path.replaceWith(t.callExpression(t.identifier('__deleteField'), [
-          t.clone(obj),
-          key,
-        ]));
-      },
-
-      // 13. OptionalMemberExpression:a?.b → __optionalChain(a, 'b')
+      // 14. UnaryExpression(operator: 'delete'):已合并到 3d visitor
       // 注:已有 OptionalMemberExpression 处理(7c 后),这里处理非链式顶层 a?.b
       // (已存在的 visitor 不重复实现)
-
-      // 14. UnaryExpression(operator: 'delete'):delete obj.x → __deleteField(obj, 'x')
-      //    (Babel 中 delete 是 UnaryExpression,Babel 7 不再有 DeleteExpression 类型)
-      UnaryExpression(path) {
-        if (path.node.operator !== 'delete') return;
-        const arg = path.node.argument;
-        if (!t.isMemberExpression(arg)) return;
-        const obj = arg.object;
-        const key = arg.computed
-          ? arg.property
-          : t.stringLiteral(arg.property.name);
-        path.replaceWith(t.callExpression(t.identifier('__deleteField'), [
-          t.clone(obj),
-          key,
-        ]));
-      },
 
       // 15. TaggedTemplateExpression:tag`${x}` → __taggedTemplate(tag, strings, x)
       TaggedTemplateExpression(path) {

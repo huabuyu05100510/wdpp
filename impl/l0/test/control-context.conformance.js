@@ -10,7 +10,9 @@ import { transformSync } from '@babel/core';
 import plugin from '../babel/plugin.js';
 
 let document, lookup, fieldIdToPath, stampOrigin;
-let __readSlot, __controlEnter, __controlExit, getControlStack;
+let __readSlot, __controlEnter, __controlExit, getControlStack,
+  __writeField, __recoverSelf, __recover, __readField, __nullish,
+  __optionalChain, __deleteField, __taggedTemplate, __await, __classPropertyInit, __throw;
 
 before(async () => {
   const dom = new JSDOM('<!doctype html><body><div id="app"></div></body>', { url: 'http://localhost/' });
@@ -36,6 +38,17 @@ before(async () => {
   __readSlot = rt.__readSlot;
   __controlEnter = rt.__controlEnter;
   __controlExit = rt.__controlExit;
+  __writeField = rt.__writeField;
+  __recoverSelf = rt.__recoverSelf;
+  __recover = rt.__recover;
+  __readField = rt.__readField;
+  __nullish = rt.__nullish;
+  __optionalChain = rt.__optionalChain;
+  __deleteField = rt.__deleteField;
+  __taggedTemplate = rt.__taggedTemplate;
+  __await = rt.__await;
+  __classPropertyInit = rt.__classPropertyInit;
+  __throw = rt.__throw;
   getControlStack = ci.getControlStack;
   document = window.document;
 });
@@ -50,8 +63,15 @@ function tx(src) {
 }
 function run(out, vars) {
   const keys = Object.keys(vars);
-  const fn = new Function(...keys, '__readSlot', '__controlEnter', '__controlExit', out.code);
-  fn(...keys.map(k => vars[k]), __readSlot, __controlEnter, __controlExit);
+  const fn = new Function(...keys,
+    '__readSlot', '__controlEnter', '__controlExit', '__writeField', '__recoverSelf',
+    '__recover', '__readField', '__nullish', '__optionalChain', '__deleteField',
+    '__taggedTemplate', '__await', '__classPropertyInit', '__throw',
+    out.code);
+  fn(...keys.map(k => vars[k]),
+    __readSlot, __controlEnter, __controlExit, __writeField, __recoverSelf,
+    __recover, __readField, __nullish, __optionalChain, __deleteField,
+    __taggedTemplate, __await, __classPropertyInit, __throw);
 }
 
 // ===== 结构回归:__controlEnter 必须存在且在 __controlExit 前 =====
