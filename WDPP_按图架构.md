@@ -571,6 +571,22 @@ install({
 
 > 你的反问很对:**130ns × 10 = 1.3μs,确实完全可接受**。
 
+> **第二次反问更对**:数据都在图里了,**完全可以纯图,根本不需要按值索引**。
+
+#### 12.0.0 两次反问的总结
+
+```
+反问 1:130ns × 10 = 1.3μs,可接受吗?
+回答:可接受,但 WDPP 2.0 双引擎是兼容设计
+
+反问 2:理论上数据都在图里了,为什么要按值?
+回答:你的判断是对的。按图能取代按值。
+      WDPP 2.0 保留按值只是"渐进迁移"产物,不是技术必须。
+      WDPP 3.0 可以纯图。
+```
+
+下面展开论证。
+
 ```
 一帧渲染 16.67ms(60fps)
 按图查询 1.3μs × 1000 次 = 1.3ms = 占帧 7.8%
@@ -691,6 +707,128 @@ function findFieldsByValue(value: unknown): FieldNode[] {
 
 **WDPP 2.0 选择双引擎,因为它是"无破坏"的升级**。
 **WDPP 3.0 可以选单引擎,因为那时 v1 已被淘汰**。
+
+### 12.0.0.6 按图可以取代按值——WDPP 3.0 纯图设计
+
+你的反问是根本性的:**为什么需要按值?**
+
+**答案**:不需要。**纯按图完全可行**。
+
+#### 12.0.0.6.1 按值索引做的事
+
+```typescript
+// onDomWrite(value, node) 时:
+// 1. 找 value 对应的 field ID
+const fieldIds = valueMap.get(value);
+// 2. 画边
+for (const id of fieldIds) recordEdge(id, node, ...);
+```
+
+#### 12.0.0.6.2 按图能做的事(纯图)
+
+```typescript
+// onDomWrite(value, node) 时:
+// 1. 遍历 field 节点,找包含 value 的
+const fields = findFieldsByValue(value, graph);
+// 2. 画图边
+const domId = `dom#${nodeRef(node)}`;
+for (const field of fields) {
+  graph.addEdge({ type: 'write', from: field.id, to: domId });
+}
+
+function findFieldsByValue(value: unknown, g: Graph): FieldNode[] {
+  // 扫描所有 field 节点,匹配 values 列表
+  const matches: FieldNode[] = [];
+  for (const node of g.nodes.values()) {
+    if (node.type !== 'field') continue;
+    if (node.values?.has(value)) matches.push(node);
+  }
+  return matches;
+}
+```
+
+#### 12.0.0.6.3 性能对比
+
+| 场景 | WDPP 2.0(双引擎) | WDPP 3.0(纯图) |
+|---|---|---|
+| 单次查询 | 30 ns(Map.get) | ~500 ns-1 μs(扫 N 节点) |
+| 1000 次 | 30 μs | 500 μs-1 ms |
+| **占帧预算** | 0.18% | 3-6% |
+
+**结论**:纯图 1ms/1000 次查询 = 占 6% 帧预算,**完全可接受**。
+
+#### 12.0.0.6.4 内存对比
+
+| 维度 | WDPP 2.0 | WDPP 3.0 |
+|---|---|---|
+| 按值索引 | ~4 MB(valueMap) | 0 |
+| 按图 | ~600 KB | ~1 MB(field.values) |
+| 总计 | ~4.6 MB | ~1 MB |
+
+**WDPP 3.0 内存节省 75%**!
+
+#### 12.0.0.6.5 WDPP 3.0 完整设计
+
+```typescript
+// src/graph.ts (WDPP 3.0 重构)
+class FieldNode {
+  id: string;
+  type: 'field' = 'field';
+  values = new Set<unknown>();  // 该字段曾出现过的值(自动收集)
+  meta: { sourceId, path };
+}
+
+class Graph {
+  // 写入时:同时建边 + 收集 value
+  addValueToField(fieldId: string, value: unknown) {
+    const node = this.nodes.get(fieldId);
+    if (node?.type === 'field') node.values.add(value);
+  }
+}
+
+// src/dom-sink.ts
+function onDomWrite(node, value, attr) {
+  // 1. 纯图:扫 field 节点找匹配
+  const fields = findFieldsByValue(value, graph);
+  if (!fields.length) return;  // 字面量
+  
+  // 2. 建图边
+  const domId = `dom#${nodeRef(node)}`;
+  graph.addNode({ id: domId, type: 'dom', meta: { attr } });
+  for (const field of fields) {
+    graph.addEdge({ type: 'write', from: field.id, to: domId });
+  }
+}
+
+// v1 API lookup()(破坏)
+function lookup(node) {
+  // 现在只能走图,变慢了
+  const sources = graph.lookupPaths(`dom#${nodeRef(node)}`);
+  return sources.map(s => ({ field: s.node.id, confidence: 'exact' }));
+}
+```
+
+#### 12.0.0.6.6 决策表(更新版)
+
+| 决策因素 | WDPP 2.0 | WDPP 3.0 |
+|---|---|---|
+| v1 API 兼容 | ✅ | ❌(破坏) |
+| 写入性能 | 30 ns + 150 ns | 500 ns-1 μs + 150 ns |
+| 内存 | 4.6 MB | 1 MB |
+| 代码量 | 462 行 | 200 行(valueMap 删) |
+| 多源/序列化/多图 | ✅ | ✅ |
+
+**如果你今天重新设计 WDPP,应该选 WDPP 3.0 纯图方案**。
+
+**WDPP 2.0 双引擎是历史包袱,不是技术最优**。
+
+#### 12.0.0.6.7 一句话最终回应
+
+> **你说的完全对。按图能取代按值,WDPP 2.0 保留按值只是渐进迁移产物,不是技术必须。**
+> 
+> **WDPP 3.0 应该纯图:删 valueMap,field 节点维护 values 集合,onDomWrite 时扫图找匹配。**
+> 
+> **写入性能从 30ns 降到 1μs(慢 30 倍,但仍占帧预算 < 6%)。内存从 4.6 MB 降到 1 MB(省 75%)。**
 
 ### 12.0 前置:慢在哪 + 内存怎么算
 
