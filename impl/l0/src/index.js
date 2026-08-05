@@ -10,6 +10,7 @@ import { installOverlay } from './overlay.js';
 import { __autoDetectReact, __setRCO } from './babel-runtime.js';
 import { autoStartIframePatch } from './iframe-patch.js';
 import { startL1Monkeypatch } from './l1-monkeypatch.js';
+import { defaultGraph, defaultGraphManager, GraphManager, ProvenanceGraph } from './graph-v2.js';
 
 const subscribers = new Set();
 let lastBatch = null;
@@ -43,6 +44,7 @@ export function install({ expose = false, overlay = false, react = 'auto', l1 = 
   }
   if (expose && typeof window !== 'undefined') {
     window.__wdpp__ = {
+      // ===== v1 兼容 API(L0 值索引 + 边)=====
       lookup(node, opts) { return lookup(node, opts).map(r => ({ ...r, fieldPath: fieldIdToPath(r.fieldId) })); },
       queryField(fieldId) { return queryField(fieldId); },
       allEdges() { return allEdges().map(e => ({ ...e, fieldPath: fieldIdToPath(e.fieldId) })); },
@@ -54,6 +56,53 @@ export function install({ expose = false, overlay = false, react = 'auto', l1 = 
       scanHydration,
       // 高级 API:host 可手动设置 fiber getter(L1 用户)
       __setRCO,
+
+      // ===== v2 纯图 API(推荐使用)=====
+      // 完整传播链:DOM → 所有 api-field 源节点
+      lookupPaths(nodeId) {
+        return defaultGraph.lookup(nodeId).map(s => ({
+          source: s.source,
+          sourcePath: s.source.meta?.sourceId,
+          fieldPath: s.source.meta?.path,
+          path: s.path.map(e => ({
+            type: e.type,
+            from: e.from,
+            to: e.to,
+            meta: e.meta,
+          })),
+          edgeTypes: s.edgeTypes,
+        }));
+      },
+      // 正向遍历:API 字段 → 所有 DOM 节点
+      queryFieldPaths(sourceId) {
+        return defaultGraph.queryField(sourceId).map(n => ({
+          id: n.id,
+          type: n.type,
+          meta: n.meta,
+        }));
+      },
+      // 图统计
+      graphStats() {
+        return {
+          nodes: defaultGraph.nodes.size,
+          edges: defaultGraph.edges.length,
+          graphs: defaultGraphManager.listGraphs().length + 1, // +1 for default
+        };
+      },
+      // 序列化(用于 devtools 持久化)
+      serializeGraph() {
+        return defaultGraph.serialize();
+      },
+      // 多图管理
+      getGraph(rootId) { return defaultGraphManager.getGraph(rootId); },
+      destroyGraph(rootId) { defaultGraphManager.destroyGraph(rootId); },
+      listGraphs() { return defaultGraphManager.listGraphs(); },
+      // 细粒度订阅(纯图 v2 增强)
+      subscribeNode(nodeId, cb) { return defaultGraph.subscribeNode(nodeId, cb); },
+      subscribeField(sourceId, cb) { return defaultGraph.subscribeField(sourceId, cb); },
+      // 默认图实例(高级用法)
+      __graph: defaultGraph,
+      __graphManager: defaultGraphManager,
     };
   }
   if (overlay && typeof window !== 'undefined') installOverlay();

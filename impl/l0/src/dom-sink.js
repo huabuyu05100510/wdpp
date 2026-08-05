@@ -6,6 +6,8 @@ import { getStamp, expandBits, getEntityKey } from './value-index.js';
 import { controlGet, getControlStack } from './control-index.js';
 import { recordEdge, clearEdges } from './graph.js';
 import { bindComponentData, bindFiberCommit } from './component-bind.js';
+import { getGraphNodeIdByFieldId } from './stamp-origin.js';
+import { defaultGraph } from './graph-v2.js';
 
 const patched = Symbol('wdpp_patched');
 
@@ -98,6 +100,24 @@ function patchAccessor(proto, prop, attrName) {
 }
 
 // ============ onDomWrite:查值画边(数据边 + 控制边,始终都查)============
+// 为 DOM 节点生成稳定的 graph id
+function domNodeGraphId(node) {
+  // 用 dom 节点本身的引用作为图节点 id(同一 dom 节点始终是同一图节点)
+  // 注:引用作 key 在 Map 表现良好;但序列化时会丢失
+  // 改进:用 node-id-like 字符串(weak ref to id map)
+  if (!node._wdpp_graph_id) {
+    // 简单方案:用 node 的内部 id(浏览器原生 nodeId 属性,但 jsdom 不支持)
+    // 退而用 weakmap
+    if (!domNodeGraphId._map) domNodeGraphId._map = new WeakMap();
+    if (!domNodeGraphId._map.has(node)) {
+      domNodeGraphId._map.set(node, `dom#${domNodeGraphId._seq++}`);
+    }
+    node._wdpp_graph_id = domNodeGraphId._map.get(node);
+  }
+  return node._wdpp_graph_id;
+}
+domNodeGraphId._seq = 1;
+
 function onDomWrite(node, value, attrName) {
   if (value === null || value === undefined) return;
   const v = (typeof value === 'object') ? String(value) : value;
@@ -123,6 +143,27 @@ function onDomWrite(node, value, attrName) {
                : stamp.count > 1 ? 'value-match'
                : 'exact';
     for (const id of expandBits(stamp.passport)) recordEdge(id, node, 'data', conf, attrName, ek);
+
+    // B-2 集成:同步建图边(api-field → dom)
+    // 注:v1 边的正向记录保留;v2 图边同时建立
+    // dom 节点 graph id 用 weakmap + seq
+    const domGid = domNodeGraphId(node);
+    defaultGraph.addNode({
+      type: 'dom',
+      id: domGid,
+      meta: { attr: attrName, nodeType: node.nodeType },
+    });
+    for (const fieldId of expandBits(stamp.passport)) {
+      const sourceGid = getGraphNodeIdByFieldId(fieldId);
+      if (sourceGid) {
+        defaultGraph.addEdge({
+          type: 'write',
+          from: sourceGid,
+          to: domGid,
+          meta: { attr: attrName, confidence: conf, entityKey: ek },
+        });
+      }
+    }
   }
   // 控制边:controlIndex(内联 &&/三元)
   for (const c of ctrls) {

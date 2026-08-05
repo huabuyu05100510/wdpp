@@ -1,9 +1,18 @@
-// stamp-origin.js - I/O 原语拦截 + 递归盖戳建值索引
+// stamp-origin.js - I/O 原语拦截 + 递归盖戳建值索引 + 纯图双写
 // 规范:WDPP-L0 §3.4/§4.2。拦 fetch/XHR(覆盖 axios/React Query/Apollo 等),盖戳进值索引。
+// B-2 集成:同时建图节点 + 边(纯图架构 v2,向后兼容 L0 值索引)
 
 import { getFieldId, stampValue, stampValuePassport, bit, getStamp, expandBits, fieldIdToPath, setEntityKey } from './value-index.js';
 import { smSet } from './sm.js';
 import { notifyUpdate } from './graph.js';
+import { defaultGraph } from './graph-v2.js';
+
+// B-2:fieldId → graph node id 反向索引(供 onDomWrite 建图边时用)
+// 当前模块级 Map;若需要多图隔离,改为 WeakMap<graph, Map<fieldId, nodeId>>
+const graphNodeByFieldId = new Map();
+export function getGraphNodeIdByFieldId(fieldId) {
+  return graphNodeByFieldId.get(fieldId);
+}
 
 // ============ fetch 拦截 ============
 const _fetch = globalThis.fetch;
@@ -208,6 +217,16 @@ export function stampOrigin(obj, sourceId, path = [], visited = new WeakSet()) {
   for (const [k, v] of Object.entries(obj)) {
     const seg = isArr ? '[]' : k; // 数组元素通配(避免千条列表膨胀 registry)
     const fieldId = getFieldId(JSON.stringify([sourceId, ...path, seg]));
+
+    // B-2 集成:同步建图节点(api-field)
+    // 注:每个字段创建一个 graph 节点,id 是 canonical path
+    const graphNodeId = JSON.stringify([sourceId, ...path, seg]);
+    defaultGraph.addNode({
+      type: 'api-field',
+      id: graphNodeId,
+      meta: { sourceId, path: [...path, seg], fieldId },
+    });
+    graphNodeByFieldId.set(fieldId, graphNodeId);
 
     if (v !== null && typeof v === 'object') {
       const sub = stampOrigin(v, sourceId, [...path, seg], visited); // 后序递归
