@@ -16,7 +16,7 @@
   "main": "./src/index.js",
   "types": "./types.d.ts",
   "scripts": {
-    "test": "node --test test/conformance.js test/l1.conformance.js test/dom.conformance.js test/p0-fixes.js test/p0-fixes-r2.conformance.js test/p1-fixes.conformance.js test/protocol.conformance.js test/xhr.conformance.js test/jalangi.conformance.js test/transform-parallel.conformance.js test/l1-precise.conformance.js test/control-context.conformance.js test/universal-block.conformance.js test/passthrough.conformance.js",
+    "test": "node --test test/conformance.js test/l1.conformance.js test/dom.conformance.js test/p0-fixes.js test/p0-fixes-r2.conformance.js test/p1-fixes.conformance.js test/protocol.conformance.js test/xhr.conformance.js test/jalangi.conformance.js test/transform-parallel.conformance.js test/l1-precise.conformance.js test/control-context.conformance.js test/universal-block.conformance.js test/passthrough.conformance.js test/shadow-dom.conformance.js test/iframe.conformance.js",
     "bench": "node bench/bench-overhead.js && node bench/bench-recall.js && node bench/bench-memory.js && node bench/bench-realistic.js"
   },
   "keywords": [

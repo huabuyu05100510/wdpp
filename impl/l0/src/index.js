@@ -8,6 +8,7 @@ import { bumpGeneration, getCurrentGen, fieldIdToPath, fieldCount } from './valu
 import { scanHydration } from './dom-sink.js';
 import { installOverlay } from './overlay.js';
 import { __autoDetectReact, __setRCO } from './babel-runtime.js';
+import { autoStartIframePatch } from './iframe-patch.js';
 
 const subscribers = new Set();
 let lastBatch = null;
@@ -27,6 +28,10 @@ export function install({ expose = false, overlay = false, react = 'auto' } = {}
   }
 
   // patches 已在 import 时生效。这里只处理 opt-in 暴露。
+  if (typeof window !== 'undefined') {
+    // P0 扩展:自动 patch iframe 上下文(per-context fetch + DOM)
+    autoStartIframePatch();
+  }
   if (expose && typeof window !== 'undefined') {
     window.__wdpp__ = {
       lookup(node, opts) { return lookup(node, opts).map(r => ({ ...r, fieldPath: fieldIdToPath(r.fieldId) })); },
