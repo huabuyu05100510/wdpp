@@ -171,9 +171,32 @@ function tryConcatAdjacent(node) {
 }
 
 // ============ MutationObserver:节点移除/合并清理 ============
+// P0 修复:递归清理 removedNode 子树,避免 Suspense 卸载 fallback 后残留幽灵边
+// 旧实现:只清理 removedNodes 顶层节点(子节点的边残留,变成幽灵边)
+// 新实现:clearSubtree 递归清理整棵子树的边
+function clearSubtree(root) {
+  if (!root) return;
+  // BFS 清理 root + 所有后代
+  const stack = [root];
+  const seen = new Set();
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node || seen.has(node)) continue;
+    seen.add(node);
+    clearEdges(node);
+    // 收集子节点
+    const childNodes = node.childNodes;
+    if (childNodes && childNodes.length) {
+      for (let i = 0; i < childNodes.length; i++) {
+        stack.push(childNodes[i]);
+      }
+    }
+  }
+}
+
 const mo = new MutationObserver((muts) => {
   for (const m of muts) {
-    for (const n of m.removedNodes) clearEdges(n);
+    for (const n of m.removedNodes) clearSubtree(n);
   }
 });
 mo.observe(document, { childList: true, subtree: true });
