@@ -9,11 +9,12 @@ import { scanHydration } from './dom-sink.js';
 import { installOverlay } from './overlay.js';
 import { __autoDetectReact, __setRCO } from './babel-runtime.js';
 import { autoStartIframePatch } from './iframe-patch.js';
+import { startL1Monkeypatch } from './l1-monkeypatch.js';
 
 const subscribers = new Set();
 let lastBatch = null;
 
-export function install({ expose = false, overlay = false, react = 'auto' } = {}) {
+export function install({ expose = false, overlay = false, react = 'auto', l1 = 'off' } = {}) {
   // P0 修复:React 版本自动检测(支持 React 18+ __CLIENT_INTERNALS 与 React 17- ReactCurrentOwner)
   // react='auto'   → 自动检测
   // react='manual' → 跳过检测,host 自己调 __setRCO()
@@ -25,6 +26,14 @@ export function install({ expose = false, overlay = false, react = 'auto' } = {}
     }
   } else if (react === 'manual') {
     // 跳过,host 自行处理
+  }
+
+  // L1 模式:l1='off' | 'babel' | 'monkeypatch'
+  // 'off'         → 纯 L0(无变换恢复)
+  // 'babel'       → 用 Babel plugin(项目方自己编译)
+  // 'monkeypatch' → 运行时劫持原生方法(零侵入,不需 Babel)
+  if (l1 === 'monkeypatch') {
+    startL1Monkeypatch();
   }
 
   // patches 已在 import 时生效。这里只处理 opt-in 暴露。
