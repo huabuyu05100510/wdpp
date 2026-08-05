@@ -44,7 +44,11 @@ function keysFor(v) {
 }
 
 // 盖戳:把字段 id 并入值的护照
+// P0 修复:undefined/null 入口 guard(stamp-origin.js:218 数组子树并集 0n 时
+// 传 undefined,如果不 guard,valueIndex.set(undefined, ...) 会把 undefined 当 key,
+// 所有后续 getStamp(undefined) 都会误命中这个位 → 批量假阳性)
 export function stampValue(v, fieldId) {
+  if (v === undefined || v === null) return; // ← P0 修复:显式 guard
   if (isLowEntropy(v)) return;
   if (typeof v === 'object') return; // 对象不入值索引(L0)
   for (const key of keysFor(v)) {

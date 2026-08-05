@@ -7,11 +7,25 @@ import { lookup, queryField, allEdges, subscribe, getCurrentWrite } from './grap
 import { bumpGeneration, getCurrentGen, fieldIdToPath, fieldCount } from './value-index.js';
 import { scanHydration } from './dom-sink.js';
 import { installOverlay } from './overlay.js';
+import { __autoDetectReact, __setRCO } from './babel-runtime.js';
 
 const subscribers = new Set();
 let lastBatch = null;
 
-export function install({ expose = false, overlay = false } = {}) {
+export function install({ expose = false, overlay = false, react = 'auto' } = {}) {
+  // P0 修复:React 版本自动检测(支持 React 18+ __CLIENT_INTERNALS 与 React 17- ReactCurrentOwner)
+  // react='auto'   → 自动检测
+  // react='manual' → 跳过检测,host 自己调 __setRCO()
+  // react='none'   → 强制不检测(无 React 场景)
+  if (react === 'auto') {
+    const detected = __autoDetectReact();
+    if (!detected) {
+      // 检测失败,host 可能后注入;暴露 setter 供调用方手动设置
+    }
+  } else if (react === 'manual') {
+    // 跳过,host 自行处理
+  }
+
   // patches 已在 import 时生效。这里只处理 opt-in 暴露。
   if (expose && typeof window !== 'undefined') {
     window.__wdpp__ = {
@@ -24,6 +38,8 @@ export function install({ expose = false, overlay = false } = {}) {
       getCurrentWrite,
       subscribe(cb) { return subscribe(cb); },
       scanHydration,
+      // 高级 API:host 可手动设置 fiber getter(L1 用户)
+      __setRCO,
     };
   }
   if (overlay && typeof window !== 'undefined') installOverlay();
