@@ -12,11 +12,15 @@ import { controlGet } from '../src/control-index.js';
 import {
   __recover, __controlAnd, __controlOr, __controlTernary, __controlReturn,
   __readSlot, __controlEnter, __controlExit, __readProp, __fieldGet, __aggr,
+  __writeField, __recoverSelf, __throw, __readField, __nullish, __optionalChain,
+  __deleteField, __taggedTemplate, __await, __classPropertyInit, __passthrough,
 } from '../src/babel-runtime.js';
 
 const HELPERS = {
   __recover, __controlAnd, __controlOr, __controlTernary, __controlReturn,
   __readSlot, __controlEnter, __controlExit, __readProp, __fieldGet, __aggr,
+  __writeField, __recoverSelf, __throw, __readField, __nullish, __optionalChain,
+  __deleteField, __taggedTemplate, __await, __classPropertyInit, __passthrough,
 };
 
 // 把 body 包进 IIFE 再变换执行(body 内可 return),helpers 与 vars 注入闭包

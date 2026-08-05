@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WDPP Graph Engine Demo</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>🌐 WDPP Graph Engine — Real Project Demo</h1>
+    <p class="subtitle">Hover any element with 📡 to see its data-source APIs</p>
+    <div id="stats">
+      <span id="stat-apis">📡 APIs: 0</span>
+      <span id="stat-nodes">🔵 Nodes: 0</span>
+      <span id="stat-edges">↔️ Edges: 0</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- Demo 1: User Profile -->
+    <section class="card">
+      <h2>👤 User Profile</h2>
+      <div class="row"><span class="label">Name:</span> <span class="value" id="user-name">Loading...</span></div>
+      <div class="row"><span class="label">Email:</span> <span class="value" id="user-email">Loading...</span></div>
+      <div class="row"><span class="label">City:</span> <span class="value" id="user-city">Loading...</span></div>
+      <div class="row"><span class="label">Member:</span> <span class="value" id="user-member">Loading...</span></div>
+    </section>
+
+    <!-- Demo 2: Orders -->
+    <section class="card">
+      <h2>📦 Orders</h2>
+      <ul id="orders-list"><li>Loading...</li></ul>
+    </section>
+
+    <!-- Demo 3: Conditional Rendering -->
+    <section class="card">
+      <h2>🔀 Conditional Rendering</h2>
+      <div id="vip-section" style="display:none">
+        <span class="badge vip">VIP Customer</span>
+        <span id="vip-discount">20% off</span>
+      </div>
+      <div id="regular-section">
+        <span class="badge regular">Regular Customer</span>
+      </div>
+    </section>
+
+    <!-- Demo 4: Field Mutation -->
+    <section class="card">
+      <h2>✏️ Field Mutation (click button)</h2>
+      <div class="row">
+        <span class="label">Current status:</span>
+        <span class="value" id="status-display">Loading...</span>
+      </div>
+      <button id="update-btn">Update Status</button>
+    </section>
+
+    <!-- Demo 5: Aggregation -->
+    <section class="card">
+      <h2>🧮 Aggregation (运算 union)</h2>
+      <div class="row"><span class="label">Total price:</span> <span class="value" id="total-price">$0</span></div>
+      <div class="row"><span class="label">Total qty:</span> <span class="value" id="item-count">0</span></div>
+    </section>
+
+    <!-- Demo 6: Products -->
+    <section class="card">
+      <h2>🛒 Products</h2>
+      <ul id="products-list"><li>Loading...</li></ul>
+    </section>
+
+    <!-- Demo 7: Dashboard Stats -->
+    <section class="card">
+      <h2>📊 Dashboard Stats</h2>
+      <div class="row"><span class="label">Total Users:</span> <span class="value" id="stats-users">0</span></div>
+      <div class="row"><span class="label">Revenue:</span> <span class="value" id="stats-revenue">$0</span></div>
+    </section>
+  </main>
+
+  <div id="devtools">
+    <h3>🔍 DevTools — Live Graph State</h3>
+    <div id="devtools-content">
+      <p>Loading...</p>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
