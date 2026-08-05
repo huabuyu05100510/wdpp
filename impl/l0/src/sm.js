@@ -21,6 +21,15 @@ export function smSet(obj, key, passport) {
   ensureShadow(obj).fields.set(key, smGet(obj, key) | passport);
 }
 
+// 删除字段槽位(__deleteField 用):真正移除,不是清零
+export function smDelete(obj, key) {
+  if (obj == null || typeof obj !== 'object') return;
+  const sh = SM.get(obj);
+  if (sh) {
+    sh.fields.delete(key);
+  }
+}
+
 // 从对象 + 链式属性路径读字段级护照:readSlot(data, ['user','isVip'])
 // 用于条件表达式:`if (data.user.isVip)` -> readSlot(data, ['user','isVip'])
 export function readSlot(root, path) {

@@ -11,9 +11,15 @@ import { getStamp, bumpGeneration } from '../src/value-index.js';
 import { recover } from '../src/recovery.js';
 import {
   __recover, __readProp, __fieldGet, __readPropOptional, __fieldGetOptional, __aggr,
+  __writeField, __recoverSelf, __throw, __readField, __nullish, __optionalChain,
+  __deleteField, __taggedTemplate, __await, __classPropertyInit,
 } from '../src/babel-runtime.js';
 
-const HELPERS = { __recover, __readProp, __fieldGet, __readPropOptional, __fieldGetOptional, __aggr };
+const HELPERS = {
+  __recover, __readProp, __fieldGet, __readPropOptional, __fieldGetOptional, __aggr,
+  __writeField, __recoverSelf, __throw, __readField, __nullish, __optionalChain,
+  __deleteField, __taggedTemplate, __await, __classPropertyInit,
+};
 
 function runBody(body, vars = {}) {
   const wrap = `(function(){ ${body} })`;

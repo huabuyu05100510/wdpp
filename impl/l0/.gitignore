@@ -1,6 +1,9 @@
 # 嵌套git仓库(本地测试用,不跟踪)
 testbed-*/app/
 
+# 独立实验项目(WDPP 2.0 早期实验,与本仓库无关)
+l0-graph/
+
 # 依赖
 node_modules/
 

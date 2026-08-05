@@ -6,6 +6,8 @@ import { getStamp, expandBits, getEntityKey } from './value-index.js';
 import { controlGet, getControlStack } from './control-index.js';
 import { recordEdge, clearEdges } from './graph.js';
 import { bindComponentData, bindFiberCommit } from './component-bind.js';
+import { getGraphNodeIdByFieldId } from './stamp-origin.js';
+import { defaultGraph } from './graph-v2.js';
 
 const patched = Symbol('wdpp_patched');
 
@@ -98,6 +100,24 @@ function patchAccessor(proto, prop, attrName) {
 }
 
 // ============ onDomWrite:查值画边(数据边 + 控制边,始终都查)============
+// 为 DOM 节点生成稳定的 graph id
+function domNodeGraphId(node) {
+  // 用 dom 节点本身的引用作为图节点 id(同一 dom 节点始终是同一图节点)
+  // 注:引用作 key 在 Map 表现良好;但序列化时会丢失
+  // 改进:用 node-id-like 字符串(weak ref to id map)
+  if (!node._wdpp_graph_id) {
+    // 简单方案:用 node 的内部 id(浏览器原生 nodeId 属性,但 jsdom 不支持)
+    // 退而用 weakmap
+    if (!domNodeGraphId._map) domNodeGraphId._map = new WeakMap();
+    if (!domNodeGraphId._map.has(node)) {
+      domNodeGraphId._map.set(node, `dom#${domNodeGraphId._seq++}`);
+    }
+    node._wdpp_graph_id = domNodeGraphId._map.get(node);
+  }
+  return node._wdpp_graph_id;
+}
+domNodeGraphId._seq = 1;
+
 function onDomWrite(node, value, attrName) {
   if (value === null || value === undefined) return;
   const v = (typeof value === 'object') ? String(value) : value;
@@ -123,6 +143,27 @@ function onDomWrite(node, value, attrName) {
                : stamp.count > 1 ? 'value-match'
                : 'exact';
     for (const id of expandBits(stamp.passport)) recordEdge(id, node, 'data', conf, attrName, ek);
+
+    // B-2 集成:同步建图边(api-field → dom)
+    // 注:v1 边的正向记录保留;v2 图边同时建立
+    // dom 节点 graph id 用 weakmap + seq
+    const domGid = domNodeGraphId(node);
+    defaultGraph.addNode({
+      type: 'dom',
+      id: domGid,
+      meta: { attr: attrName, nodeType: node.nodeType },
+    });
+    for (const fieldId of expandBits(stamp.passport)) {
+      const sourceGid = getGraphNodeIdByFieldId(fieldId);
+      if (sourceGid) {
+        defaultGraph.addEdge({
+          type: 'write',
+          from: sourceGid,
+          to: domGid,
+          meta: { attr: attrName, confidence: conf, entityKey: ek },
+        });
+      }
+    }
   }
   // 控制边:controlIndex(内联 &&/三元)
   for (const c of ctrls) {
@@ -141,22 +182,62 @@ function isTextNode(node) {
 }
 
 // 拼接相邻文本兄弟查询。挂载规则:仅文本节点、单值 miss 时、同一父元素下相邻文本、不跨元素边界
+// P1 修复:原实现从 parent.firstChild 累积,会把无关前缀也拼进去(误命中)。
+// 改为:从 node 自身向前回溯(到上一个 Element 停止) + 向后遍历(到下一个 Element 停止),
+//      只拼接真正相邻的兄弟文本节点,不包含无关前缀。
 function tryConcatAdjacent(node) {
   const parent = node.parentNode;
   if (!parent) return null;
-  let combined = '';
-  for (let n = parent.firstChild; n; n = n.nextSibling) {
+  if (node.nodeType !== 3) return null; // 仅文本节点
+
+  // 向后拼接:从 node.nextSibling 开始,到第一个 Element 停止
+  let combined = node.nodeValue;
+  let n = node.nextSibling;
+  while (n) {
     if (n.nodeType === 3) combined += n.nodeValue;
-    else if (n.nodeType === 1) { combined = ''; } // 遇元素重置(不跨元素边界)
+    else break; // 遇元素边界停止
+    n = n.nextSibling;
   }
+
+  // 向前回溯:从 node.previousSibling 开始,到第一个 Element 停止
+  n = node.previousSibling;
+  while (n) {
+    if (n.nodeType === 3) combined = n.nodeValue + combined;
+    else break; // 遇元素边界停止
+    n = n.previousSibling;
+  }
+
   if (combined === node.nodeValue) return null; // 没有兄弟,拼了也等于自己
   return getStamp(combined);
 }
 
 // ============ MutationObserver:节点移除/合并清理 ============
+// P0 修复:递归清理 removedNode 子树,避免 Suspense 卸载 fallback 后残留幽灵边
+// 旧实现:只清理 removedNodes 顶层节点(子节点的边残留,变成幽灵边)
+// 新实现:clearSubtree 递归清理整棵子树的边
+function clearSubtree(root) {
+  if (!root) return;
+  // BFS 清理 root + 所有后代
+  const stack = [root];
+  const seen = new Set();
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node || seen.has(node)) continue;
+    seen.add(node);
+    clearEdges(node);
+    // 收集子节点
+    const childNodes = node.childNodes;
+    if (childNodes && childNodes.length) {
+      for (let i = 0; i < childNodes.length; i++) {
+        stack.push(childNodes[i]);
+      }
+    }
+  }
+}
+
 const mo = new MutationObserver((muts) => {
   for (const m of muts) {
-    for (const n of m.removedNodes) clearEdges(n);
+    for (const n of m.removedNodes) clearSubtree(n);
   }
 });
 mo.observe(document, { childList: true, subtree: true });

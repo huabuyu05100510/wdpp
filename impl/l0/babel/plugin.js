@@ -4,6 +4,11 @@
 //
 // 按值追踪下不需插桩的:变量赋值/for-of/delete/计算键/对象字面量/函数参数(值带护照)
 // 需插桩的:产生新值的变换 + 控制流条件
+//
+// Universal Taint Union(P3):扩展覆盖 7+ 新 AST 节点
+//   AssignmentExpression / MemberExpression 写 / ObjectPattern / VariableDeclarator /
+//   ThrowStatement / OptionalMemberExpression / NullishCoalescingExpression /
+//   DeleteExpression / TaggedTemplateExpression / ClassProperty / AwaitExpression
 
 const PURE_METHODS = new Set([
   'toUpperCase','toLowerCase','trim','trimStart','trimEnd','slice','substring','substr',
@@ -12,7 +17,14 @@ const PURE_METHODS = new Set([
   'join','indexOf','lastIndexOf','includes','startsWith','endsWith',
 ]);
 
-const HELPERS = new Set(['__recover','__passthrough','__controlAnd','__controlOr','__controlTernary','__controlReturn','__controlEnter','__controlExit','__readSlot','__readProp','__fieldGet','__aggr','__readPropOptional','__fieldGetOptional']);
+const HELPERS = new Set([
+  '__recover','__passthrough','__controlAnd','__controlOr','__controlTernary','__controlReturn',
+  '__controlEnter','__controlExit','__readSlot','__readProp','__fieldGet','__aggr',
+  '__readPropOptional','__fieldGetOptional',
+  // P3:Universal Taint Union 新 helpers
+  '__writeField','__recoverSelf','__throw','__readField','__nullish','__optionalChain',
+  '__deleteField','__taggedTemplate','__await','__classPropertyInit',
+]);
 
 // 深拷贝函数白名单(通用工具函数,非业务 by case)。识别后走 __passthrough(递归复制 identity 到输出),
 // 解决深拷贝断 identity(Proxy 不可克隆,信息论限制) + byVal 值反查碰撞。JSON.parse(JSON.stringify(x)) 模式含。
@@ -215,13 +227,32 @@ export default function wdppPlugin({ types: t }, opts = {}) {
       // 4. && / ||:cond OP right -> __controlAnd(cond, readSlot, () => right)
       LogicalExpression(path) {
         const left = path.node.left;
-        if (!t.isMemberExpression(left)) return;
-        const slot = extractSlot(left);
-        if (!slot) return;
+        // a ?? b (nullish coalescing) → __nullish(a, b, ...)
+        if (path.node.operator === '??') {
+          path.replaceWith(t.callExpression(t.identifier('__nullish'), [
+            t.clone(left),
+            t.clone(path.node.right),
+            t.numericLiteral(0),  // 占位:host 可填实际 passport
+            t.numericLiteral(0),
+          ]));
+          return;
+        }
+        // 处理 && / ||,left 必须是 MemberExpression(可读 slot)或 Identifier
+        if (!t.isMemberExpression(left) && !t.isIdentifier(left)) return;
+        // Identifier 没有 SM 槽位,slot 是 0n;MemberExpression 走 readSlot
+        let slotCall;
+        if (t.isMemberExpression(left)) {
+          const slot = extractSlot(left);
+          if (!slot) return;
+          slotCall = readSlotCall(slot);
+        } else {
+          // 简单标识符:slot 是 0n(控制边生效,但数据边走 right)
+          slotCall = t.numericLiteral(0);
+        }
         const helper = path.node.operator === '&&' ? '__controlAnd' : '__controlOr';
         path.replaceWith(t.callExpression(t.identifier(helper), [
           t.clone(left),
-          readSlotCall(slot),
+          slotCall,
           t.arrowFunctionExpression([], t.clone(path.node.right)),
         ]));
       },
@@ -385,18 +416,18 @@ export default function wdppPlugin({ types: t }, opts = {}) {
         if (t.isUpdateExpression(path.parent) && path.parent.argument === path.node) return;
         if (isRecoverArg(path)) return;
         if (path.node.computed) {
-          // a?.[k] -> __fieldGetOptional(a, k)
-          path.replaceWith(t.callExpression(t.identifier('__fieldGetOptional'), [
+          // a?.[k] -> __optionalChain(a, k)(universal 实现)
+          path.replaceWith(t.callExpression(t.identifier('__optionalChain'), [
             t.clone(path.node.object),
             t.clone(path.node.property),
           ]));
           return;
         }
-        if (!l2 || !t.isIdentifier(path.node.property)) return;
+        if (!t.isIdentifier(path.node.property)) return;
         if (path.parentPath.isCallExpression() &&
             t.isIdentifier(path.parentPath.node.callee, { name: '__readSlot' })) return;
-        // a?.b -> __readPropOptional(a, 'b')
-        path.replaceWith(t.callExpression(t.identifier('__readPropOptional'), [
+        // a?.b -> __optionalChain(a, 'b')
+        path.replaceWith(t.callExpression(t.identifier('__optionalChain'), [
           t.clone(path.node.object),
           t.stringLiteral(path.node.property.name),
         ]));
@@ -420,6 +451,155 @@ export default function wdppPlugin({ types: t }, opts = {}) {
           t.clone(path.node),
           t.arrayExpression(inputs),
         ]));
+      },
+
+      // ============ Universal Taint Union:7+ 新 visitor ============
+
+      // 8. AssignmentExpression:x = y → __recoverSelf(x, y)
+      // 标识符赋值,result 继承 expr 的 taint
+      AssignmentExpression(path) {
+        if (isRecoverArg(path)) return;
+        const { left, right } = path.node;
+        // 仅处理简单标识符赋值(复杂场景由 MemberExpression visitor 接管)
+        if (!t.isIdentifier(left)) return;
+        // 已是 helper 调用,跳过
+        if (t.isCallExpression(right) && t.isIdentifier(right.callee) && HELPERS.has(right.callee.name)) return;
+        path.replaceWith(t.callExpression(t.identifier('__recoverSelf'), [
+          t.clone(left),
+          t.clone(right),
+        ]));
+      },
+
+      // 9. MemberExpression 写:obj.x = y / obj[k] = y → __writeField(obj, key, y)
+      // 字段突变:field taint 继承 y
+      MemberExpression(path) {
+        if (isRecoverArg(path)) return;
+        const parent = path.parentPath;
+        // 只处理作为赋值 left 的 MemberExpression
+        if (!parent.isAssignmentExpression() || parent.node.left !== path.node) return;
+        const obj = path.node.object;
+        const key = path.node.computed
+          ? path.node.property
+          : t.stringLiteral(path.node.property.name);
+        const value = parent.node.right;
+        parent.replaceWith(t.callExpression(t.identifier('__writeField'), [
+          t.clone(obj),
+          key,
+          t.clone(value),
+        ]));
+      },
+
+      // 10. ObjectPattern 解构:const { a, b } = obj → 展开为多个 __readField
+      // 数组解构:const [a, b] = arr → __readField(arr, '0') 等
+      ObjectPattern(path) {
+        const parent = path.parentPath;
+        if (!parent.isVariableDeclarator()) return;
+        const sourceObj = parent.node.init;
+        if (!sourceObj || !t.isIdentifier(sourceObj) && !t.isMemberExpression(sourceObj)) return;
+        // 简化:只处理标识符解构
+        if (!t.isIdentifier(sourceObj)) return;
+        const sourceId = t.identifier(sourceObj.name);
+        const stmts = path.node.properties.map((prop) => {
+          const key = prop.key;
+          const alias = prop.value;
+          if (!t.isIdentifier(alias)) return null;
+          const keyName = t.isIdentifier(key) ? key.name : key.value;
+          return t.variableDeclarator(
+            alias,
+            t.callExpression(t.identifier('__readField'), [
+              t.clone(sourceId),
+              t.stringLiteral(keyName),
+            ])
+          );
+        }).filter(Boolean);
+        if (!stmts.length) return;
+        // 替换为多个 variableDeclarator
+        const newDecl = t.variableDeclaration('const', stmts);
+        path.parentPath.replaceWith(newDecl);
+      },
+
+      // 11. ThrowStatement:throw x → throw __throw(x)
+      ThrowStatement(path) {
+        const arg = path.node.argument;
+        if (!arg) return;
+        // 防递归:如果 argument 已经是 __throw 调用,跳过
+        if (t.isCallExpression(arg) && t.isIdentifier(arg.callee) && HELPERS.has(arg.callee.name)) return;
+        path.replaceWith(t.throwStatement(
+          t.callExpression(t.identifier('__throw'), [t.clone(arg)])
+        ));
+        // 阻止重新访问新节点(避免无限递归)
+      },
+
+      // 12. NullishCoalescingExpression (a ?? b):Babel 用 LogicalExpression + operator:'??' 表示
+      //      扩展现有 LogicalExpression visitor 处理 operator === '??'
+      //      (新代码写在 LogicalExpression 内,见下面 visitor 重写)
+
+      // 14. UnaryExpression(operator: 'delete'):delete obj.x → __deleteField(obj, 'x')
+      //    (Babel 中 delete 是 UnaryExpression,Babel 7 不再有 DeleteExpression 类型)
+      UnaryExpression(path) {
+        if (path.node.operator !== 'delete') return;
+        const arg = path.node.argument;
+        if (!t.isMemberExpression(arg)) return;
+        const obj = arg.object;
+        const key = arg.computed
+          ? arg.property
+          : t.stringLiteral(arg.property.name);
+        path.replaceWith(t.callExpression(t.identifier('__deleteField'), [
+          t.clone(obj),
+          key,
+        ]));
+      },
+
+      // 13. OptionalMemberExpression:a?.b → __optionalChain(a, 'b')
+      // 注:已有 OptionalMemberExpression 处理(7c 后),这里处理非链式顶层 a?.b
+      // (已存在的 visitor 不重复实现)
+
+      // 14. UnaryExpression(operator: 'delete'):delete obj.x → __deleteField(obj, 'x')
+      //    (Babel 中 delete 是 UnaryExpression,Babel 7 不再有 DeleteExpression 类型)
+      UnaryExpression(path) {
+        if (path.node.operator !== 'delete') return;
+        const arg = path.node.argument;
+        if (!t.isMemberExpression(arg)) return;
+        const obj = arg.object;
+        const key = arg.computed
+          ? arg.property
+          : t.stringLiteral(arg.property.name);
+        path.replaceWith(t.callExpression(t.identifier('__deleteField'), [
+          t.clone(obj),
+          key,
+        ]));
+      },
+
+      // 15. TaggedTemplateExpression:tag`${x}` → __taggedTemplate(tag, strings, x)
+      TaggedTemplateExpression(path) {
+        const tag = path.node.tag;
+        const quasi = path.node.quasi;
+        const exprs = path.node.quasi.expressions;
+        if (!tag || exprs.length === 0) return;
+        const args = [t.clone(tag), t.clone(quasi), ...exprs.map(e => t.clone(e))];
+        path.replaceWith(t.callExpression(t.identifier('__taggedTemplate'), args));
+      },
+
+      // 16. AwaitExpression:await x → __await(x)
+      AwaitExpression(path) {
+        path.replaceWith(t.callExpression(t.identifier('__await'), [t.clone(path.node.argument)]));
+      },
+
+      // 17. ClassProperty:class { x = y } → __classPropertyInit(this, 'x', y)
+      ClassProperty(path) {
+        const value = path.node.value;
+        if (!value) return;
+        const key = path.node.key;
+        const keyName = t.isIdentifier(key) ? key.name : (t.isStringLiteral(key) ? key.value : null);
+        if (!keyName) return;
+        // 替换为 __classPropertyInit(this, 'key', value)
+        path.replaceWith(t.expressionStatement(
+          t.callExpression(t.identifier('__classPropertyInit'), [
+            t.thisExpression(),
+            t.stringLiteral(keyName),
+            t.clone(value),
+          ])
+        ));
       },
     },
   };
