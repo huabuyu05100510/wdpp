@@ -10,7 +10,14 @@ import { getStamp, stampValuePassport } from './value-index.js';
 // 纯方法/函数调用后调用:recover(result, [recv, ...args])
 export function recover(result, inputs) {
   if (result === null || result === undefined) return;
-  if (typeof result === 'object') return; // 对象返回值不进值索引(L1 简化)
+  if (typeof result === 'object') {
+    // 对象结果(工厂/map-filter/构造返回的新容器):盖"输入并集"戳(identity),
+    // 否则新容器无照 → 作 receiver 过近似时断路。
+    let union = 0n;
+    for (const inp of inputs) { const s = getStamp(inp); if (s) union |= s.passport; }
+    if (union !== 0n) stampValuePassport(result, union);
+    return;
+  }
 
   // ① 身份匹配:result === 某输入 -> 精确继承
   for (const inp of inputs) {

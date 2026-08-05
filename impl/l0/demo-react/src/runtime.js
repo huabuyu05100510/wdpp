@@ -1,12 +1,27 @@
-// runtime.js - 把 L0 运行时 + L1 helper 注入浏览器全局
-// L0 runtime patches fetch/XHR/DOM(副作用 import);L1 helper 挂 window 供 Babel 产物调用
-import '@wdpp/index.js';                                  // L0:patch + install
-import { __recover, __controlAnd, __controlOr, __controlTernary, __readSlot } from '@wdpp/babel-runtime.js';
+// runtime.js - L0 runtime + L1/L2 helper 注入浏览器全局
+// 纯通用:plugin 插桩所有操作(__recover 调用边界传护照)+ value-index + DOM sink + overlay。
+import '@wdpp/index.js';
+import {
+  __recover, __passthrough, __fieldGet, __aggr, __readProp,
+  __readPropOptional, __fieldGetOptional,
+  __controlAnd, __controlOr, __controlTernary, __controlReturn,
+  __readSlot, __controlEnter, __controlExit,
+  __setRCO,
+} from '@wdpp/babel-runtime.js';
 import { install } from '@wdpp/index.js';
+import React from 'react';
 
-install({ expose: true }); // opt-in:挂 window.__wdpp__
+install({ expose: true, overlay: true });
 
-// L1 helper 挂全局(Babel 插件产物的裸标识符 __recover 等解析到这)
-Object.assign(globalThis, { __recover, __controlAnd, __controlOr, __controlTernary, __readSlot });
+__setRCO(() => React?.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE?.A
+  ?? React?.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED?.ReactCurrentOwner?.current
+  ?? null);
 
-console.log('WDPP L0+L1 ready. window.__wdpp__ 可用。');
+Object.assign(globalThis, {
+  __recover, __passthrough, __fieldGet, __aggr, __readProp,
+  __readPropOptional, __fieldGetOptional,
+  __controlAnd, __controlOr, __controlTernary, __controlReturn,
+  __readSlot, __controlEnter, __controlExit,
+});
+
+console.log('WDPP ready. window.__wdpp__ 可用,屏幕叠加已启动。');

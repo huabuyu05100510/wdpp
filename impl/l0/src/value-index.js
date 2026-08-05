@@ -6,8 +6,9 @@
 const fieldRegistry = new Map(); // path(string) -> fieldId(number)
 let nextFieldId = 1;
 
-/** 值索引:原始值 -> { passport, gen }。对象不入此表(走 WeakMap,L0 暂不需要)。 */
+/** 值索引:原始值 -> { passport, gen }。对象按 identity 走 objectIndex(过近似用)。 */
 const valueIndex = new Map();
+const objectIndex = new WeakMap(); // 对象 -> { passport, gen }(receiver 过近似:不透明调用拿对象当输入)
 
 let currentGen = 1;
 
@@ -61,7 +62,12 @@ export function stampValue(v, fieldId) {
 // 查询:返回 { passport, collision } 或 null。过滤过期代。
 export function getStamp(v) {
   if (v === null || v === undefined) return null;
-  if (typeof v === 'object') return null;
+  if (typeof v === 'object') { // 对象按 identity 查(receiver 过近似)
+    const e = objectIndex.get(v);
+    if (!e || e.gen !== currentGen || e.passport === 0n) return null;
+    const count = popcount(e.passport);
+    return { passport: e.passport, collision: count > BREAKER_K, count };
+  }
   let passport = 0n;
   let hit = false;
   for (const key of keysFor(v)) {
@@ -87,9 +93,13 @@ export function expandBits(b) {
 // 直接给一个值盖上"护照集合"(变换恢复用:结果值 = 输入并集)
 export function stampValuePassport(v, passport, conf) {
   if (v === null || v === undefined) return;
-  if (typeof v === 'object') return;
-  if (isLowEntropy(v)) return;
   if (passport === 0n) return;
+  if (typeof v === 'object') { // 对象:按 identity 盖(子树并集),供 receiver 过近似
+    const e = objectIndex.get(v);
+    objectIndex.set(v, { passport: (e?.passport || 0n) | passport, gen: currentGen });
+    return;
+  }
+  if (isLowEntropy(v)) return;
   for (const key of keysFor(v)) {
     const entry = valueIndex.get(key);
     if (entry) { entry.passport |= passport; entry.gen = currentGen; }

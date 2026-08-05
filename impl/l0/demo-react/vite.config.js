@@ -14,10 +14,12 @@ function wdppL1() {
     transform(code, id) {
       if (!APP.test(id)) return null;            // 只转 app 代码
       if (id.includes('/node_modules/')) return null;
+      if (id.endsWith('runtime.js')) return null; // 排除 WDPP 注入代码(install 被 __recover 包会依赖循环)
+      if (id.includes('/impl/l0/src/')) return null; // 排除 WDPP 库自身(__recover 函数体被插桩→无限递归)
       const out = transformSync(code, {
         filename: id,
         presets: ['@babel/preset-react'],
-        plugins: [wdppPlugin],
+        plugins: [[wdppPlugin, { l2: true }]],
         sourceMaps: true,
       });
       return { code: out.code, map: out.map };

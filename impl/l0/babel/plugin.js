@@ -12,7 +12,11 @@ const PURE_METHODS = new Set([
   'join','indexOf','lastIndexOf','includes','startsWith','endsWith',
 ]);
 
-const HELPERS = new Set(['__recover','__controlAnd','__controlOr','__controlTernary','__controlReturn','__readSlot','__readProp']);
+const HELPERS = new Set(['__recover','__passthrough','__controlAnd','__controlOr','__controlTernary','__controlReturn','__controlEnter','__controlExit','__readSlot','__readProp','__fieldGet','__aggr','__readPropOptional','__fieldGetOptional']);
+
+// 深拷贝函数白名单(通用工具函数,非业务 by case)。识别后走 __passthrough(递归复制 identity 到输出),
+// 解决深拷贝断 identity(Proxy 不可克隆,信息论限制) + byVal 值反查碰撞。JSON.parse(JSON.stringify(x)) 模式含。
+const DEEP_CLONE_FNS = new Set(['cloneDeep', 'structuredClone', 'deepClone', 'deepcopy', 'deepCopy']);
 
 export default function wdppPlugin({ types: t }, opts = {}) {
   const l2 = !!opts.l2; // L2 全量属性读 + 跨组件控制
@@ -37,11 +41,27 @@ export default function wdppPlugin({ types: t }, opts = {}) {
     ]);
   }
 
-  // 是否已是 __recover 的第一个参数(防重入)
+  // 是否已是 helper(__recover/__passthrough/__aggr 等)的第一个参数(防重入)
   function isRecoverArg(path) {
-    return path.parentPath.isCallExpression() &&
-      t.isIdentifier(path.parentPath.node.callee, { name: '__recover' }) &&
-      path.parentPath.node.arguments[0] === path.node;
+    const pp = path.parentPath;
+    if (!pp.isCallExpression()) return false;
+    const callee = pp.node.callee;
+    return t.isIdentifier(callee) && HELPERS.has(callee.name) && pp.node.arguments[0] === path.node;
+  }
+
+  // 深拷贝调用识别(白名单 + JSON 往返模式),识别后走 __passthrough(递归复制 identity)
+  function isDeepCloneCall(path) {
+    const callee = path.node.callee;
+    if (t.isIdentifier(callee) && DEEP_CLONE_FNS.has(callee.name)) return true;
+    if (t.isMemberExpression(callee) && !callee.computed && t.isIdentifier(callee.property) && DEEP_CLONE_FNS.has(callee.property.name)) return true;
+    if (t.isMemberExpression(callee) && !callee.computed && t.isIdentifier(callee.object, { name: 'JSON' }) && t.isIdentifier(callee.property, { name: 'parse' })) {
+      const arg0 = path.node.arguments[0];
+      if (t.isCallExpression(arg0)) {
+        const inner = arg0.callee;
+        if (t.isMemberExpression(inner) && t.isIdentifier(inner.object, { name: 'JSON' }) && t.isIdentifier(inner.property, { name: 'stringify' })) return true;
+      }
+    }
+    return false;
   }
 
   // 收集表达式中的操作数(Identifier/MemberExpression),不递归进属性名
@@ -72,12 +92,17 @@ export default function wdppPlugin({ types: t }, opts = {}) {
         // 只处理产生字符串/数字的运算(算术/拼接),不处理比较(=== < > 那些是布尔化)
         const op = path.node.operator;
         if (['==','===','!=','!==','<','>','<=','>=','instanceof','in'].includes(op)) return;
-        const inputs = collectInputs(path.node);
-        if (!inputs.length) return;
-        path.replaceWith(t.callExpression(t.identifier('__recover'), [
-          t.clone(path.node),
-          t.arrayExpression(inputs),
-        ]));
+        // 单次求值 IIFE(修双重求值):((_l,_r) => __recover(_l op _r, [_l,_r]))(left, right)
+        // left/right 各求值一次(IIFE 实参左到右);_l op _r 真实运算,保 valueOf/求值序/语义
+        const l = path.scope.generateUidIdentifier('l');
+        const r = path.scope.generateUidIdentifier('r');
+        path.replaceWith(t.callExpression(
+          t.arrowFunctionExpression([l, r], t.callExpression(t.identifier('__recover'), [
+            t.binaryExpression(op, t.clone(l), t.clone(r)),
+            t.arrayExpression([t.clone(l), t.clone(r)]),
+          ])),
+          [t.clone(path.node.left), t.clone(path.node.right)],
+        ));
       },
 
       // 2. 模板字面量:`${a}${b}` -> __recover(`...`, [a, b])
@@ -94,36 +119,97 @@ export default function wdppPlugin({ types: t }, opts = {}) {
         ]));
       },
 
-      // 3. 函数调用:纯方法 + 一般调用
+      // 3. 函数调用:统一过近似(身份/值指纹/并集由 recover 决定)。不断路。
+      // f(args) -> __recover(f(args), [args]);recv.m(args) -> __recover(..., [recv, ...args])
+      // callee 原样保留(this 不丢);receiver/args 作输入,recover 并集兜底给结果护照。
       CallExpression(path) {
         if (isRecoverArg(path)) return;
         const callee = path.node.callee;
-
-        // 纯方法:recv.m(...args) -> __recover(recv.m(...args), [recv, ...args])
-        if (t.isMemberExpression(callee) && !callee.computed &&
-            t.isIdentifier(callee.property) && PURE_METHODS.has(callee.property.name)) {
-          const recv = callee.object;
-          const args = path.node.arguments;
-          path.replaceWith(t.callExpression(t.identifier('__recover'), [
-            t.clone(path.node),
-            t.arrayExpression([t.clone(recv), ...args.map(a => t.clone(a))]),
-          ]));
-          return;
+        if (t.isIdentifier(callee) && (HELPERS.has(callee.name) || callee.name === 'require' || callee.name === 'import')) return;
+        const inputs = [];
+        if (t.isMemberExpression(callee)) inputs.push(t.clone(callee.object)); // receiver = 数据源
+        for (const a of path.node.arguments) {
+          if (t.isIdentifier(a) || t.isMemberExpression(a) || t.isCallExpression(a) ||
+              t.isArrayExpression(a) || t.isObjectExpression(a)) inputs.push(t.clone(a));
         }
+        if (!inputs.length) return;
+        // 深拷贝走 __passthrough(递归复制 identity 到输出,字段级精确);其余 __recover(根并集)
+        const helper = isDeepCloneCall(path) ? '__passthrough' : '__recover';
+        path.replaceWith(t.callExpression(t.identifier(helper), [
+          t.clone(path.node),
+          t.arrayExpression(inputs),
+        ]));
+      },
 
-        // 一般调用(非 helper、非 JSX 运行时):f(args) -> __recover(f(args), [args])
-        // 只对有标识符 callee 的调用(不处理 require/import 等特殊调用)
-        if (l2 && t.isIdentifier(callee) && !HELPERS.has(callee.name) &&
-            callee.name !== 'require' && callee.name !== 'import' &&
-            !path.parentPath.isCallExpression()) {
-          const args = path.node.arguments.filter(a => t.isIdentifier(a) || t.isMemberExpression(a));
-          if (args.length) {
-            path.replaceWith(t.callExpression(t.identifier('__recover'), [
-              t.clone(path.node),
-              t.arrayExpression(args.map(a => t.clone(a))),
-            ]));
-          }
+      // 3b. 自增/自减:++X 产新值 -> __recover(++X, [X∓1]) 取旧值护照(并集)
+      // ++ 后 X 已新值,X-1 还原旧值(带照);-- 用 X+1。++/-- 步长恒 1。
+      UpdateExpression(path) {
+        if (isRecoverArg(path)) return;
+        const op = path.node.operator; // '++' | '--'
+        const oldExpr = t.binaryExpression(op === '++' ? '-' : '+', t.clone(path.node.argument), t.numericLiteral(1));
+        path.replaceWith(t.callExpression(t.identifier('__recover'), [
+          t.clone(path.node),
+          t.arrayExpression([oldExpr]),
+        ]));
+      },
+
+      // 3c. 字面量/spread 产新容器 -> __aggr 盖成员并集(identity),否则新容器无照断路。
+      //   跳过插件自产 helper 调用内部的 [inputs] 数组/对象(它们不是数据,是 helper 形参),
+      //   但其内的值产生元素(用户数组/对象)仍会被包(父是数组,非 helper 调用)。
+      ArrayExpression(path) {
+        if (isRecoverArg(path)) return;
+        const p = path.parentPath;
+        if (p.isCallExpression() && t.isIdentifier(p.node.callee) && HELPERS.has(p.node.callee.name)) return;
+        path.replaceWith(t.callExpression(t.identifier('__aggr'), [t.clone(path.node)]));
+      },
+      ObjectExpression(path) {
+        if (isRecoverArg(path)) return;
+        const p = path.parentPath;
+        if (p.isCallExpression() && t.isIdentifier(p.node.callee) && HELPERS.has(p.node.callee.name)) return;
+        path.replaceWith(t.callExpression(t.identifier('__aggr'), [t.clone(path.node)]));
+      },
+
+      // 3d. 一元 -a/+a/~a:产新值 -> __recover(op a,[a])。!/typeof/void/delete 不传(布尔/丢弃)
+      UnaryExpression(path) {
+        if (isRecoverArg(path)) return;
+        const op = path.node.operator;
+        if (op === '!' || op === 'typeof' || op === 'void' || op === 'delete') return;
+        path.replaceWith(t.callExpression(t.identifier('__recover'), [
+          t.clone(path.node),
+          t.arrayExpression([t.clone(path.node.argument)]),
+        ]));
+      },
+
+      // 3e. 复合赋值 a+=b / a-=b:新值 -> __recover(a+=b,[a∓b]) 取旧值(用逆运算还原)
+      //   仅 += / -=(逆运算精确);*= /= %= **= 求逆不精确,跳(降级 CUT)
+      AssignmentExpression(path) {
+        if (isRecoverArg(path)) return;
+        const op = path.node.operator;
+        if (op !== '+=' && op !== '-=') return; // 纯=是拷贝(通路);逻辑赋值=控制(另处理);*/**等跳
+        const inv = op === '+=' ? '-' : '+';
+        const oldExpr = t.binaryExpression(inv, t.clone(path.node.left), t.clone(path.node.right));
+        path.replaceWith(t.callExpression(t.identifier('__recover'), [
+          t.clone(path.node),
+          t.arrayExpression([oldExpr]),
+        ]));
+      },
+
+      // 3f. new C(x):构造体不透明 -> __recover(new C(x),[C?,...args]),对象结果由 recover-object 盖输入并集
+      NewExpression(path) {
+        if (isRecoverArg(path)) return;
+        const callee = path.node.callee;
+        if (t.isIdentifier(callee) && HELPERS.has(callee.name)) return;
+        const inputs = [];
+        if (t.isMemberExpression(callee)) inputs.push(t.clone(callee.object));
+        for (const a of path.node.arguments) {
+          if (t.isIdentifier(a) || t.isMemberExpression(a) || t.isCallExpression(a) ||
+              t.isArrayExpression(a) || t.isObjectExpression(a)) inputs.push(t.clone(a));
         }
+        if (!inputs.length) return;
+        path.replaceWith(t.callExpression(t.identifier('__recover'), [
+          t.clone(path.node),
+          t.arrayExpression(inputs),
+        ]));
       },
 
       // 4. && / ||:cond OP right -> __controlAnd(cond, readSlot, () => right)
@@ -184,13 +270,15 @@ export default function wdppPlugin({ types: t }, opts = {}) {
             wrapReturn(cons.body[0]);
           } else {
             // 非 return 体:__controlEnter + try/finally/__controlExit
-            cons.body.unshift(t.expressionStatement(t.callExpression(t.identifier('__controlEnter'), [t.clone(cp)])));
-            cons.body.unshift(t.tryStatement(
-              t.blockStatement(cons.body.slice(1)),
+            // enter 在 try 外:enter 抛错则不触发 exit(避免 pop 空栈);enter 成功后 finally 必 pop,配对正确。
+            // (旧实现 unshift(enter) 后 body=[tryStmt] 把 enter 覆盖丢弃 -> 体执行时栈空,控制边丢失 + 嵌套误 pop 外层)
+            const enterStmt = t.expressionStatement(t.callExpression(t.identifier('__controlEnter'), [t.clone(cp)]));
+            const tryStmt = t.tryStatement(
+              t.blockStatement(cons.body),
               null,
               t.blockStatement([t.expressionStatement(t.callExpression(t.identifier('__controlExit'), []))])
-            ));
-            cons.body = [cons.body[0]];
+            );
+            cons.body = [enterStmt, tryStmt];
           }
         } else if (t.isReturnStatement(cons)) {
           wrapReturn(cons);
@@ -202,10 +290,10 @@ export default function wdppPlugin({ types: t }, opts = {}) {
           if (t.isBlockStatement(alt)) {
             for (const s of alt.body) wrapReturn(s);
             if (!alt.body.some(s => t.isReturnStatement(s))) {
-              alt.body.unshift(t.expressionStatement(t.callExpression(t.identifier('__controlEnter'), [t.clone(cp)])));
-              const orig = alt.body.slice(1);
-              alt.body = [t.tryStatement(t.blockStatement(orig), null,
-                t.blockStatement([t.expressionStatement(t.callExpression(t.identifier('__controlExit'), []))]))];
+              const enterStmt = t.expressionStatement(t.callExpression(t.identifier('__controlEnter'), [t.clone(cp)]));
+              const tryStmt = t.tryStatement(t.blockStatement(alt.body), null,
+                t.blockStatement([t.expressionStatement(t.callExpression(t.identifier('__controlExit'), []))]));
+              alt.body = [enterStmt, tryStmt];
             }
           } else wrapReturn(alt);
         }
@@ -238,10 +326,10 @@ export default function wdppPlugin({ types: t }, opts = {}) {
         const cp = readSlotCall(slot);
         const body = path.node.body;
         if (t.isBlockStatement(body)) {
-          body.body.unshift(t.expressionStatement(t.callExpression(t.identifier('__controlEnter'), [t.clone(cp)])));
-          const orig = body.body.slice(1);
-          body.body = [t.tryStatement(t.blockStatement(orig), null,
-            t.blockStatement([t.expressionStatement(t.callExpression(t.identifier('__controlExit'), []))]))];
+          const enterStmt = t.expressionStatement(t.callExpression(t.identifier('__controlEnter'), [t.clone(cp)]));
+          const tryStmt = t.tryStatement(t.blockStatement(body.body), null,
+            t.blockStatement([t.expressionStatement(t.callExpression(t.identifier('__controlExit'), []))]));
+          body.body = [enterStmt, tryStmt];
         }
       },
 
@@ -261,23 +349,78 @@ export default function wdppPlugin({ types: t }, opts = {}) {
         // switch 末尾加清理(简化:每个 case 末尾不单独 exit,靠下一个 case 的 enter 覆盖)
       },
 
-      // 7. L2:全量属性读 a.b -> __readProp(a, 'b')(返回原值 + SM 槽位)
-      ...(l2 ? {
-        MemberExpression(path) {
-          if (path.parentPath.isCallExpression() && PURE_METHODS.has(path.node.property?.name)) return;
-          if (path.parentPath.isMemberExpression()) return; // 链式 a.b.c 只处理最内层
-          if (t.isAssignmentExpression(path.parent) && path.parent.left === path.node) return; // 赋值左侧
-          if (path.node.computed) return;
-          if (!t.isIdentifier(path.node.property)) return;
-          // 不替换 readSlot 内部的
-          if (path.parentPath.isCallExpression() &&
-              t.isIdentifier(path.parentPath.node.callee, { name: '__readSlot' })) return;
-          path.replaceWith(t.callExpression(t.identifier('__readProp'), [
+      // 7. 成员读:计算式 obj[key] -> __fieldGet(obj,key)(key 带照→控制边);非计算式 a.b -> L2 __readProp
+      MemberExpression(path) {
+        // 左值 / callee / 链式内层 不包。callee 用 path.key(结构键,跨多趟 transform 稳)而非 node 引用(克隆后易失效)
+        if (path.parentPath.isCallExpression() && (path.key === 'callee' || path.parentPath.node.callee === path.node)) return;
+        if (path.parentPath.isMemberExpression()) return;
+        if (t.isAssignmentExpression(path.parent) && path.parent.left === path.node) return;
+        if (t.isUpdateExpression(path.parent) && path.parent.argument === path.node) return;
+        if (path.node.computed) {
+          // obj[key]:key 选择了 result -> __fieldGet(obj,key),key 只读一次
+          if (isRecoverArg(path)) return;
+          path.replaceWith(t.callExpression(t.identifier('__fieldGet'), [
             t.clone(path.node.object),
-            t.stringLiteral(path.node.property.name),
+            t.clone(path.node.property),
           ]));
-        },
-      } : {}),
+          return;
+        }
+        if (!l2 || !t.isIdentifier(path.node.property)) return;
+        if (path.parentPath.isCallExpression() &&
+            t.isIdentifier(path.parentPath.node.callee, { name: '__readSlot' })) return;
+        path.replaceWith(t.callExpression(t.identifier('__readProp'), [
+          t.clone(path.node.object),
+          t.stringLiteral(path.node.property.name),
+        ]));
+      },
+
+      // 7b. optional chaining:a?.b / a?.[k] -> __readPropOptional/__fieldGetOptional(保 ?. 短路)
+      //   skip-inner(只包最外,记最外的读;同 MemberExpression);callee/lvalue 不包。
+      //   nullish 短路由 helper 保(__readPropOptional obj==null 返 undefined,不读不记)。
+      OptionalMemberExpression(path) {
+        if (path.parentPath.isCallExpression() && (path.key === 'callee' || path.parentPath.node.callee === path.node)) return;
+        if (path.parentPath.isOptionalCallExpression() && (path.key === 'callee' || path.parentPath.node.callee === path.node)) return;
+        if (path.parentPath.isMemberExpression() || path.parentPath.isOptionalMemberExpression()) return; // 链内层(只包最外)
+        if (t.isAssignmentExpression(path.parent) && path.parent.left === path.node) return;
+        if (t.isUpdateExpression(path.parent) && path.parent.argument === path.node) return;
+        if (isRecoverArg(path)) return;
+        if (path.node.computed) {
+          // a?.[k] -> __fieldGetOptional(a, k)
+          path.replaceWith(t.callExpression(t.identifier('__fieldGetOptional'), [
+            t.clone(path.node.object),
+            t.clone(path.node.property),
+          ]));
+          return;
+        }
+        if (!l2 || !t.isIdentifier(path.node.property)) return;
+        if (path.parentPath.isCallExpression() &&
+            t.isIdentifier(path.parentPath.node.callee, { name: '__readSlot' })) return;
+        // a?.b -> __readPropOptional(a, 'b')
+        path.replaceWith(t.callExpression(t.identifier('__readPropOptional'), [
+          t.clone(path.node.object),
+          t.stringLiteral(path.node.property.name),
+        ]));
+      },
+
+      // 7c. optional call:f?.(args) / recv?.m(args) -> __recover(f?.(args), [recv, ...args])
+      //   f?.(args) 本身保短路(nullish -> undefined);__recover 处理 undefined 结果。
+      OptionalCallExpression(path) {
+        if (isRecoverArg(path)) return;
+        const callee = path.node.callee;
+        if (t.isIdentifier(callee) && (HELPERS.has(callee.name) || callee.name === 'require' || callee.name === 'import')) return;
+        const inputs = [];
+        if (t.isMemberExpression(callee) || t.isOptionalMemberExpression(callee)) inputs.push(t.clone(callee.object));
+        for (const a of path.node.arguments) {
+          if (t.isIdentifier(a) || t.isMemberExpression(a) || t.isOptionalMemberExpression(a) ||
+              t.isCallExpression(a) || t.isOptionalCallExpression(a) ||
+              t.isArrayExpression(a) || t.isObjectExpression(a)) inputs.push(t.clone(a));
+        }
+        if (!inputs.length) return;
+        path.replaceWith(t.callExpression(t.identifier('__recover'), [
+          t.clone(path.node),
+          t.arrayExpression(inputs),
+        ]));
+      },
     },
   };
 }

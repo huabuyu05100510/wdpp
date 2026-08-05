@@ -1,0 +1,15 @@
+# 嵌套git仓库(本地测试用,不跟踪)
+testbed-*/app/
+
+# 依赖
+node_modules/
+
+# 系统
+.DS_Store
+
+# 日志
+*.log
+
+# 构建产物
+dist/
+build/

@@ -1,0 +1,13 @@
+{
+  "name": "verify",
+  "private": true,
+  "version": "1.0.0",
+  "description": "WDPP provenance verification for ant-design-pro testbed",
+  "scripts": {
+    "probe": "node probe.mjs",
+    "lookup": "node lookup.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.62.1"
+  }
+}

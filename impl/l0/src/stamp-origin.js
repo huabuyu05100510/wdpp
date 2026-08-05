@@ -1,8 +1,9 @@
 // stamp-origin.js - I/O 原语拦截 + 递归盖戳建值索引
 // 规范:WDPP-L0 §3.4/§4.2。拦 fetch/XHR(覆盖 axios/React Query/Apollo 等),盖戳进值索引。
 
-import { getFieldId, stampValue, bit, getStamp, expandBits, fieldIdToPath, setEntityKey } from './value-index.js';
+import { getFieldId, stampValue, stampValuePassport, bit, getStamp, expandBits, fieldIdToPath, setEntityKey } from './value-index.js';
 import { smSet } from './sm.js';
+import { notifyUpdate } from './graph.js';
 
 // ============ fetch 拦截 ============
 const _fetch = globalThis.fetch;
@@ -10,28 +11,17 @@ if (_fetch) {
   globalThis.fetch = async function (input, init) {
     const res = await _fetch.call(globalThis, input, init);
     const sourceId = resolveFetchSourceId(input, init);
-    patchResponse(res, sourceId);
-    const _clone = res.clone.bind(res);
-    res.clone = function () { const c = _clone(); patchResponse(c, sourceId); return c; };
+    // fire-and-forget:克隆读 body 盖戳。不 await(流式响应会挂),不 patch res(app 原生读 json/text/arrayBuffer/body 都不冲突)。
+    // 盖戳异步,可能晚于 app render;overlay 3s 周期 scanHydration 会补上。
+    try {
+      const clone = res.clone();
+      clone.text().then((t) => { try { stampOrigin(JSON.parse(t), sourceId); } catch {} }).catch(() => {});
+    } catch {}
     return res;
   };
 }
 
-function patchResponse(res, sourceId) {
-  const _json = res.json.bind(res);
-  res.json = async function () {
-    const d = await _json();
-    // 大响应用分片异步版(不阻塞);小响应同步版即可。阈值按元素数粗判。
-    if (d && typeof d === 'object' && estimateNodes(d) > 500) {
-      await stampOriginChunked(d, sourceId);
-    } else {
-      stampOrigin(d, sourceId);
-    }
-    return d;
-  };
-  const _text = res.text.bind(res);
-  res.text = async function () { const t = await _text(); return t; };
-}
+function patchResponse() {} // 不再 patch res(app 原生读;fire-and-forget clone 盖戳)
 
 // 粗估对象节点数(决定用同步还是分片)
 function estimateNodes(obj) {
@@ -45,6 +35,10 @@ if (typeof XMLHttpRequest !== 'undefined') {
   const _open = XMLHttpRequest.prototype.open;
   const _send = XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+    // __sourceIdUrl 必须在此处设(此时 this===xhr 实例),供 send 里 maybeGraphQL 提取 host。
+    // 不能放进 resolveXhrSourceId--它是普通函数调用,ESM 严格模式下 this===undefined,
+    // 赋值会抛 TypeError 让所有 xhr.open() 失败(此前 XHR 通道被合成测试完全漏掉)。
+    this.__sourceIdUrl = url;
     this.__sourceId = resolveXhrSourceId(method, url);
     return _open.call(this, method, url, ...rest);
   };
@@ -185,7 +179,6 @@ function resolveFetchSourceId(input, init) {
   return `${method} ${cleanUrl}`;
 }
 function resolveXhrSourceId(method, url) {
-  this.__sourceIdUrl = url;
   return `${(method || 'GET').toUpperCase()} ${stripQuery(url)}`;
 }
 function stripQuery(url) { return String(url).split('?')[0]; }
@@ -211,6 +204,7 @@ export function stampOrigin(obj, sourceId, path = [], visited = new WeakSet()) {
   const isArr = Array.isArray(obj);
   let allUnion = 0n;
 
+  const fieldMap = {}; // 字段→护照,写入自有 Symbol 属性(穿透 spread/Object.assign 拷贝)
   for (const [k, v] of Object.entries(obj)) {
     const seg = isArr ? '[]' : k; // 数组元素通配(避免千条列表膨胀 registry)
     const fieldId = getFieldId(JSON.stringify([sourceId, ...path, seg]));
@@ -219,6 +213,7 @@ export function stampOrigin(obj, sourceId, path = [], visited = new WeakSet()) {
       const sub = stampOrigin(v, sourceId, [...path, seg], visited); // 后序递归
       // 双写 SM(条件侧车用):obj.k 的字段级护照 = 自身位 ∪ 子树并集
       smSet(obj, k, bit(fieldId) | sub);
+      fieldMap[k] = bit(fieldId) | sub;
       if (isArr) {
         stampValue(sub > 0n ? sub : undefined, fieldId); // 子树并集作为"元素值"盖戳(若非 0)
       }
@@ -226,6 +221,7 @@ export function stampOrigin(obj, sourceId, path = [], visited = new WeakSet()) {
     } else {
       stampValue(v, fieldId); // 原始叶子:盖戳(内含类型归一化 + 低熵跳过)
       smSet(obj, k, bit(fieldId)); // 双写 SM:叶子字段级护照
+      fieldMap[k] = bit(fieldId);
       // entityKey:若对象有 id 字段,叶子带记录级血缘
       if (!isArr && obj.id != null) setEntityKey(v, obj.id);
       allUnion |= (sub_for(v, fieldId));
@@ -236,6 +232,27 @@ export function stampOrigin(obj, sourceId, path = [], visited = new WeakSet()) {
     const lenId = getFieldId(JSON.stringify([sourceId, ...path, 'length']));
     stampValue(obj.length, lenId);
   }
+  stampValuePassport(obj, allUnion); // 对象自身按 identity 盖子树并集(过近似 receiver 用)
+  // 非可枚举:内部元数据,不泄漏到 Object.keys/JSON.stringify/spread(否则 BigInt 护照致 JSON.stringify 崩 + 污染应用迭代/序列化)。
+  //   直接访问 record.__wdpp_fields 仍可用;拷贝(spread/assign/深拷贝)丢则由 byVal 反查兜底(与 umi 深拷贝同路径,两测试床本就走 byVal)。
+  try { Object.defineProperty(obj, '__wdpp_fields', { value: fieldMap, enumerable: false, configurable: true, writable: true }); } catch {}
+  // 值反查表:umi request/ProTable 深拷贝 record 丢 __wdpp_fields/Symbol 时,用字段值(name 等)反查原 record 的 fieldMap
+  if (!isArr) {
+    try {
+      if (typeof globalThis !== 'undefined') {
+        globalThis.__wdpp_byVal = globalThis.__wdpp_byVal || {};
+        for (const k of Object.keys(obj)) {
+          if (k === '__wdpp_fields') continue;
+          const v = obj[k];
+          if (v === null || v === undefined || typeof v === 'object') continue;
+          if (v === true || v === false || v === 0 || v === 1 || v === '' || v === '0' || v === '1') continue; // 跳低熵(会碰撞)
+          globalThis.__wdpp_byVal[v] = fieldMap;
+        }
+      }
+    } catch {}
+  }
+  // 根调用(path 空)盖戳完成:主动触发归因补扫(异步盖戳晚于 render 的刷新不一致根因,不依赖 3s 轮询)
+  if (path.length === 0) { try { notifyUpdate(); } catch {} }
   return allUnion;
 }
 

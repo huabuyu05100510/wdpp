@@ -1,7 +1,23 @@
-// babel-runtime.js - L1/L2 Babel 插件注入的运行时 helper
+// babel-runtime.js - Babel 插件注入的运行时 helper
+// 通用机制:__recover 在调用边界把输入护照传到结果(库作整体算子);__fieldGet/__readProp 盖字段护照;
+// __control* 登记控制边。value-index 按值查护照,DOM sink 在写入处归因。
 import { recover } from './recovery.js';
-import { readSlot, smGet } from './sm.js';
+import { readSlot, smGet, smSet } from './sm.js';
 import { controlAdd, controlStackPush, controlStackPop } from './control-index.js';
+import { getStamp, stampValuePassport } from './value-index.js';
+
+// 当前渲染 fiber getter(React 18: ReactCurrentOwner.current;React 19: __CLIENT_INTERNALS.A)。
+// __readProp 据此在 render 时盖字段护照(若在渲染上下文)。host 注入;无 react 时返回 null(跳过)。
+let __getCurrentFiber = () => null;
+export function __setRCO(getter) {
+  __getCurrentFiber = typeof getter === 'function' ? getter : () => getter?.current ?? null;
+}
+
+// fiber 读取记录:render 时 __readProp 记"当前 fiber 读了哪些 [obj,key]",commit 期读取方按 fiber 反查。
+// 用 WeakMap 而非 fiber.__wdppReads -- React 18.3 fiber 不可扩展(Object.isExtensible=false),
+// 直接挂属性抛 "Cannot add property __wdppReads, object is not extensible";WeakMap 不要求可扩展 + 不污染 fiber + fiber GC 自清。
+const fiberReads = new WeakMap();
+export function getFiberReads(fiber) { return fiberReads.get(fiber) ?? null; }
 
 // 仅登记原始值;对象(element/组件返回值)不登记(跨组件边界,L2 处理)
 function ctrlAdd(r, passport) {
@@ -10,14 +26,74 @@ function ctrlAdd(r, passport) {
   controlAdd(r, passport);
 }
 
-// 变换恢复:result = f(inputs) -> 恢复 result 护照,返回 result
+// 变换恢复:result = f(inputs) -> 恢复 result 护照,返回 result(库作整体算子:结果=输入并集)
 export function __recover(result, inputs) {
   recover(result, inputs);
   return result;
 }
 
-// cond && right:cond 真 -> right 受 cond 控制。
-// L2:push 控制上下文(同步框架组件渲染时 DOM 写可见控制边);React 延迟渲染栈已空(降级)
+// 深拷贝 pass-through(§7.7):深拷贝是纯函数,输出结构=输入。递归复制输入 identity 到输出,
+// 让深拷贝后新对象仍带字段级 identity(非 byVal 值反查,不碰撞)。解决深拷贝断 identity(Proxy 不可克隆)。
+function copyIdentityDeep(src, dst, visited) {
+  if (!src || !dst || typeof src !== 'object' || typeof dst !== 'object') return;
+  if (src === dst) return; // 浅拷贝引用共享,无需复制
+  if (!visited) visited = new WeakSet();
+  if (visited.has(src)) return; // 循环引用保护
+  visited.add(src);
+  const sp = getStamp(src); // objectIndex 子树并集
+  if (sp && sp.passport) stampValuePassport(dst, sp.passport);
+  if (src.__wdpp_fields) { // 字段位并集(含低熵 status)
+    try { Object.defineProperty(dst, '__wdpp_fields', { value: src.__wdpp_fields, enumerable: false, configurable: true, writable: true }); } catch {}
+  }
+  for (const k in src) {
+    try {
+      const slot = smGet(src, k); // SM 字段槽位(含低熵)
+      if (slot) smSet(dst, k, slot);
+    } catch {}
+    const sv = src[k], dv = dst[k];
+    if (sv && dv && typeof sv === 'object' && typeof dv === 'object') {
+      copyIdentityDeep(sv, dv, visited); // 递归子字段
+    }
+  }
+}
+export function __passthrough(result, inputs) {
+  if (result && typeof result === 'object' && inputs) {
+    for (const arg of inputs) {
+      if (arg && typeof arg === 'object') copyIdentityDeep(arg, result);
+    }
+  }
+  return result;
+}
+
+// 计算式成员 obj[key]:key 带照 -> 控制边(key 选择了 result);静态 key 数据边来自 SM 槽位。
+export function __fieldGet(obj, key) {
+  const r = obj[key];
+  let passport = 0n;
+  const ks = getStamp(key);
+  if (ks) passport = ks.passport;
+  if (ks) ctrlAdd(r, ks.passport); // 动态 key(带照):key 选择了成员 -> 控制边(lookup[code]/valueEnum)
+  const slot = (obj != null && typeof obj === 'object') ? smGet(obj, key) : 0n;
+  if (slot) passport |= slot;
+  if (!passport && key === __lastValue && __lastSlotPassport) passport = __lastSlotPassport;
+  if (passport && r !== null && r !== undefined) {
+    stampValuePassport(r, passport);
+  }
+  if (passport) { __lastValue = r; __lastSlotPassport = passport; }
+  return r;
+}
+
+// 新容器(字面量/spread)盖"成员并集"戳(identity),否则新容器无照断路。
+export function __aggr(container) {
+  let union = 0n;
+  if (Array.isArray(container)) {
+    for (const e of container) { const s = getStamp(e); if (s) union |= s.passport; }
+  } else if (container && typeof container === 'object') {
+    for (const k in container) { const s = getStamp(container[k]); if (s) union |= s.passport; }
+  }
+  if (union !== 0n) stampValuePassport(container, union);
+  return container;
+}
+
 export function __controlAnd(condVal, condPassport, rightFn) {
   if (condVal) {
     if (condPassport) controlStackPush(condPassport);
@@ -26,8 +102,6 @@ export function __controlAnd(condVal, condPassport, rightFn) {
   }
   return condVal;
 }
-
-// cond || right:cond 假 -> right 受 cond 控制
 export function __controlOr(condVal, condPassport, rightFn) {
   if (!condVal) {
     if (condPassport) controlStackPush(condPassport);
@@ -36,8 +110,6 @@ export function __controlOr(condVal, condPassport, rightFn) {
   }
   return condVal;
 }
-
-// cond ? a : b:选中支受 cond 控制
 export function __controlTernary(condVal, condPassport, aFn, bFn) {
   if (condPassport) controlStackPush(condPassport);
   try {
@@ -46,37 +118,54 @@ export function __controlTernary(condVal, condPassport, aFn, bFn) {
     return r;
   } finally { if (condPassport) controlStackPop(); }
 }
-
-// if (cond) return X:X 受 cond 控制(原始值登记;element 不登记,跨组件属 L2)
 export function __controlReturn(condPassport, value) {
   ctrlAdd(value, condPassport);
   return value;
 }
 
-// L2:全量属性读 __readProp(obj, key) -> 返回 obj[key] + 记录 SM 槽位到 thread-local
-// 供后续 recover/condition 用更精确的字段级护照
+// 全量属性读 __readProp(obj, key):返回 obj[key] + 盖字段护照(SM 槽位)+ 记录读(若渲染上下文)
 let __lastSlotPassport = 0n;
+let __lastValue;
 export function __readProp(obj, key) {
-  const val = obj?.[key];
-  __lastSlotPassport = (obj != null && typeof obj === 'object') ? smGet(obj, key) : 0n;
+  const val = obj[key];
+  let slot = (obj != null && typeof obj === 'object') ? smGet(obj, key) : 0n;
+  if (slot === 0n && val !== null && val !== undefined && typeof val !== 'object') {
+    const os = getStamp(obj);
+    if (os) slot = os.passport;
+  }
+  __lastSlotPassport = slot;
+  __lastValue = val;
+  if (slot && val !== null && val !== undefined && typeof val !== 'object') {
+    stampValuePassport(val, slot);
+  }
+  const f = __getCurrentFiber();
+  if (f && obj != null) {
+    let reads = fiberReads.get(f);
+    if (!reads) { reads = []; fiberReads.set(f, reads); }
+    reads.push([obj, key]);
+  }
   return val;
+}
+// optional chaining:obj 为 nullish 时返 undefined(?. 短路),否则正常 __readProp/__fieldGet
+export function __readPropOptional(obj, key) {
+  if (obj == null) return undefined;
+  return __readProp(obj, key);
+}
+export function __fieldGetOptional(obj, key) {
+  if (obj == null) return undefined;
+  return __fieldGet(obj, key);
 }
 export function __getLastSlotPassport() { return __lastSlotPassport; }
 export function __resetLastSlotPassport() { __lastSlotPassport = 0n; }
 
 export { readSlot as __readSlot };
 
-// ===== 控制上下文栈(if 非 return 体 / while / for / switch 用)=====
 export function __controlEnter(passport) { controlStackPush(passport); }
 export function __controlExit() { controlStackPop(); }
-
-// if (cond) { body } 非return体:enter -> body -> exit
 export function __controlIfBody(condPassport, bodyFn) {
   controlStackPush(condPassport);
   try { return bodyFn(); } finally { controlStackPop(); }
 }
-
-// switch (expr) { case ... }:判别式控制所有 case 体
 export function __controlSwitch(condPassport, bodyFn) {
   controlStackPush(condPassport);
   try { return bodyFn(); } finally { controlStackPop(); }

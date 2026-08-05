@@ -6,11 +6,12 @@ import './dom-sink.js';     // 副作用:patch DOM APIs + style + hydration scan
 import { lookup, queryField, allEdges, subscribe, getCurrentWrite } from './graph.js';
 import { bumpGeneration, getCurrentGen, fieldIdToPath, fieldCount } from './value-index.js';
 import { scanHydration } from './dom-sink.js';
+import { installOverlay } from './overlay.js';
 
 const subscribers = new Set();
 let lastBatch = null;
 
-export function install({ expose = false } = {}) {
+export function install({ expose = false, overlay = false } = {}) {
   // patches 已在 import 时生效。这里只处理 opt-in 暴露。
   if (expose && typeof window !== 'undefined') {
     window.__wdpp__ = {
@@ -25,6 +26,7 @@ export function install({ expose = false } = {}) {
       scanHydration,
     };
   }
+  if (overlay && typeof window !== 'undefined') installOverlay();
 }
 
 // demo 用:打印当前图

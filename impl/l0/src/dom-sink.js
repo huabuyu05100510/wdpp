@@ -1,9 +1,11 @@
 // dom-sink.js - DOM 写入拦截 + onDomWrite 查值画边 + 相邻文本拼接 + MutationObserver 清理
 // 规范:WDPP-L0 §4.3。主通道:CharacterData.nodeValue/data + setAttribute + property 表。
+// 纯通用:不解析 antd columns / data-test(旧声明通道已移除),库内变换墙靠 react-hack fiber 反查 + byVal 解。
 
 import { getStamp, expandBits, getEntityKey } from './value-index.js';
 import { controlGet, getControlStack } from './control-index.js';
 import { recordEdge, clearEdges } from './graph.js';
+import { bindComponentData, bindFiberCommit } from './component-bind.js';
 
 const patched = Symbol('wdpp_patched');
 
@@ -68,24 +70,14 @@ if (typeof Element !== 'undefined') {
   }
 }
 
-// hydration 全 DOM 扫描:SSR 水合不触发 DOM 写,需主动扫描补边
-let _hydrationScanned = false;
-export function scanHydration(root) {
-  if (_hydrationScanned) return;
-  _hydrationScanned = true;
+// hydration 全 DOM 扫描:分层归因(字段级 fiberReads + 块级 props 带照对象)。async 分片 yield 不阻塞。
+// 注:onDomWrite 全 DOM walk 省略(React 客户端渲染的 DOM 写入已由 patchAccessor 实时记边;
+// 重扫是给 SSR 水合/异步渲染补 fiber 归因)。需要时手动调 window.__wdpp__.scanHydration()。
+export async function scanHydration(root) {
   const doc = root || (typeof document !== 'undefined' ? document : null);
-  if (!doc || !doc.createTreeWalker) return;
-  const walker = doc.createTreeWalker(doc, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
-  while (walker.nextNode()) {
-    const node = walker.currentNode;
-    if (node.nodeType === 3) {
-      if (node.nodeValue) onDomWrite(node, node.nodeValue);
-    } else if (node.nodeType === 1) {
-      for (const attr of node.attributes || []) {
-        if (attr.value) onDomWrite(node, attr.value, attr.name);
-      }
-    }
-  }
+  if (!doc) return;
+  await bindFiberCommit(doc);    // 字段级:render 期 fiberReads -> commit 期定案(app 代码 L2 读取)
+  await bindComponentData(doc);  // 块级:props 含带照对象 -> 外层 host 归 identity 并集
 }
 // hydration 扫描不自动触发(避免干扰测试/增加启动开销)。
 // 用户在 hydration 完成后显式调 window.__wdpp__.scanHydration()。
