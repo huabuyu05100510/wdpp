@@ -53,8 +53,43 @@ export class ProvenanceGraph {
 
   addNode(node) {
     if (!node || !node.id) return;
+    // field/api-field 节点自动建 values 集合(纯图方案)
+    if ((node.type === 'field' || node.type === 'api-field') && !node.values) {
+      node.values = new Set();
+    }
+    // 3.0 修复:如果节点已存在,合并 values 到现有节点(防止 stampOrigin 多次创建丢失数据)
+    const existing = this.nodes.get(node.id);
+    if (existing) {
+      if ((node.type === 'field' || node.type === 'api-field') && node.values && existing.values) {
+        for (const v of node.values) existing.values.add(v);
+      }
+      // 保留 existing 节点,只更新 meta
+      if (node.meta) Object.assign(existing.meta, node.meta);
+      this.notifyChange({ type: 'add-node', node: existing });
+      return;
+    }
     this.nodes.set(node.id, node);
     this.notifyChange({ type: 'add-node', node });
+  }
+
+  // 给 field 节点添加一个值到 values 集合(纯图扫描用)
+  addValueToField(fieldId, value) {
+    const node = this.nodes.get(fieldId);
+    if (node && (node.type === 'field' || node.type === 'api-field') && node.values) {
+      if (value === null || value === undefined) return;
+      // 类型归一化(数字/布尔同时存原值和 String)
+      for (const key of this._normalizeValueKeys(value)) {
+        node.values.add(key);
+      }
+    }
+  }
+
+  // 类型归一化辅助(与 value-index.js 一致)
+  _normalizeValueKeys(value) {
+    if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+      return [value, String(value)];
+    }
+    return [value];
   }
 
   addEdge(edge) {
@@ -105,6 +140,28 @@ export class ProvenanceGraph {
    * @param {string} sourceId
    * @returns {GraphNode[]}
    */
+  // 3.0 改进:纯图扫描 — value → field 节点
+  // 用于 onDomWrite miss valueMap 时的 fallback 路径
+  findFieldsByValue(value) {
+    if (value === null || value === undefined) return [];
+    // 类型归一化:数字/布尔同时查原值和 String
+    const keys = (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint')
+      ? [value, String(value)]
+      : [value];
+    const matches = [];
+    for (const node of this.nodes.values()) {
+      if ((node.type === 'field' || node.type === 'api-field') && node.values) {
+        for (const k of keys) {
+          if (node.values.has(k)) {
+            matches.push(node);
+            break;
+          }
+        }
+      }
+    }
+    return matches;
+  }
+
   queryField(sourceId) {
     const result = [];
     const visited = new Set();

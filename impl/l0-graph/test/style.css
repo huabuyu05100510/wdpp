@@ -1,0 +1,87 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, sans-serif; background: #1a1f2e; color: #fff; padding: 20px; }
+
+header {
+  background: rgba(255,255,255,0.05);
+  padding: 20px;
+  border-radius: 12px;
+  margin-bottom: 20px;
+}
+header h1 { margin-bottom: 8px; }
+.subtitle { opacity: 0.7; margin-bottom: 12px; }
+#stats { display: flex; gap: 16px; margin-top: 12px; }
+#stats span { padding: 6px 12px; background: rgba(255,255,255,0.1); border-radius: 16px; font-size: 13px; }
+
+button {
+  margin-top: 12px;
+  padding: 8px 16px;
+  background: #4f46e5;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+main { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; }
+
+.case-card {
+  background: rgba(255,255,255,0.95);
+  color: #1a1a1a;
+  border-radius: 10px;
+  padding: 14px;
+  border-left: 4px solid #4f46e5;
+}
+.case-card.passed { border-left-color: #10b981; }
+.case-card.failed { border-left-color: #ef4444; }
+.case-card.pending { border-left-color: #94a3b8; }
+
+.case-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.case-num { font-weight: 700; color: #4f46e5; }
+.case-status { font-weight: 700; }
+
+.case-name { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+.case-desc { font-size: 12px; color: #666; margin-bottom: 8px; }
+
+.case-target {
+  background: #f8fafc;
+  padding: 8px;
+  border-radius: 6px;
+  font-family: 'SF Mono', monospace;
+  font-size: 13px;
+  margin-bottom: 6px;
+  word-break: break-all;
+}
+
+.case-expected {
+  font-size: 11px;
+  color: #555;
+  padding: 4px 0;
+}
+.case-actual {
+  font-size: 11px;
+  padding: 4px 0;
+  font-family: 'SF Mono', monospace;
+}
+.case-actual.match { color: #10b981; }
+.case-actual.mismatch { color: #ef4444; }
+
+#results-panel {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  background: rgba(0,0,0,0.95);
+  color: #0f0;
+  padding: 12px;
+  font-family: 'SF Mono', monospace;
+  font-size: 11px;
+  max-height: 200px;
+  overflow-y: auto;
+  border-top: 2px solid #4f46e5;
+}
+#results-panel h3 { color: #fff; margin-bottom: 6px; font-size: 13px; }
+#results-log { white-space: pre-wrap; line-height: 1.6; }

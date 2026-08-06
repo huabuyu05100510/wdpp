@@ -128,6 +128,25 @@ function onDomWrite(node, value, attrName) {
     stamp = tryConcatAdjacent(node);
   }
 
+  // 3.0 改进:valueMap miss 时,fallback 到纯图扫描(field 节点 values 集合)
+  // 场景:valueMap 因代际压缩 / 熔断丢失,或首次出现(value 还在建图但还没 stamp)
+  // 注意:这会扫描所有 field 节点,O(N),仅 fallback 路径
+  if (!stamp) {
+    const fields = defaultGraph.findFieldsByValue(v);
+    if (fields.length) {
+      // 用图扫描结果构造 stamp
+      let union = 0n;
+      for (const f of fields) {
+        // 从 field 节点 meta 拿到 fieldId
+        const fid = f.meta?.fieldId;
+        if (fid) union |= (1n << BigInt(fid));
+      }
+      if (union > 0n) {
+        stamp = { passport: union, count: fields.length, collision: fields.length > 5 };
+      }
+    }
+  }
+
   // 控制边:controlIndex + 控制上下文栈(if/while/for 体)
   const ctrls = controlGet(v);
   const stack = getControlStack();

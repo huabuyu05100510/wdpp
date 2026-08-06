@@ -7,6 +7,13 @@ import { smSet } from './sm.js';
 import { notifyUpdate } from './graph.js';
 import { defaultGraph } from './graph-v2.js';
 
+// 3.0 改进:判断 value 是否低熵(在 stamp-origin 里复制定义,与 value-index 一致)
+function isLowEntropyValue(v) {
+  if (v === null || v === undefined) return true;
+  if ([true, false, 0, 1, '', null, undefined, '0', '1', 'true', 'false'].includes(v)) return true;
+  return false;
+}
+
 // B-2:fieldId → graph node id 反向索引(供 onDomWrite 建图边时用)
 // 当前模块级 Map;若需要多图隔离,改为 WeakMap<graph, Map<fieldId, nodeId>>
 const graphNodeByFieldId = new Map();
@@ -228,6 +235,13 @@ export function stampOrigin(obj, sourceId, path = [], visited = new WeakSet()) {
     });
     graphNodeByFieldId.set(fieldId, graphNodeId);
 
+    // 3.0 改进:同步把 value 加到 field 节点的 values 集合
+    // 让纯图扫描(value → field)能 work(onDomWrite miss valueMap 时 fallback)
+    // 注意:即使是低熵值(0/1/true),也加到 field.values(纯图路径不走 valueMap 黑名单)
+    if (v !== null && typeof v !== 'object') {
+      defaultGraph.addValueToField(graphNodeId, v);
+    }
+
     if (v !== null && typeof v === 'object') {
       const sub = stampOrigin(v, sourceId, [...path, seg], visited); // 后序递归
       // 双写 SM(条件侧车用):obj.k 的字段级护照 = 自身位 ∪ 子树并集
@@ -241,6 +255,9 @@ export function stampOrigin(obj, sourceId, path = [], visited = new WeakSet()) {
       stampValue(v, fieldId); // 原始叶子:盖戳(内含类型归一化 + 低熵跳过)
       smSet(obj, k, bit(fieldId)); // 双写 SM:叶子字段级护照
       fieldMap[k] = bit(fieldId);
+      // 3.0 改进:同步给 field 节点 values 集合添加叶子值(让纯图扫描能找到)
+      // 即使低熵值,纯图路径不走 valueMap 黑名单,仍 addValueToField
+      defaultGraph.addValueToField(graphNodeId, v);
       // entityKey:若对象有 id 字段,叶子带记录级血缘
       if (!isArr && obj.id != null) setEntityKey(v, obj.id);
       allUnion |= (sub_for(v, fieldId));

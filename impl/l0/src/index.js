@@ -54,7 +54,12 @@ export function install({ expose = false, overlay = false, react = 'auto', l1 = 
       lookup(node, opts) { return lookup(node, opts).map(r => ({ ...r, fieldPath: fieldIdToPath(r.fieldId) })); },
       queryField(fieldId) { return queryField(fieldId); },
       allEdges() { return allEdges().map(e => ({ ...e, fieldPath: fieldIdToPath(e.fieldId) })); },
-      clearProvenance() { bumpGeneration(); },
+      clearProvenance() {
+        bumpGeneration();
+        // 3.0:同时清图(登出 = 真正全清)
+        // bumpGeneration 只清 valueMap,clearGraph 清 field.values
+        try { defaultGraph.clear(); } catch {}
+      },
       getCurrentGen,
       fieldCount,
       getCurrentWrite,

@@ -1,5 +1,10 @@
 // value-index.js — 值映射 + 字段 ID + 低熵黑名单 + 熔断 + 代际
 // 规范:WDPP-L0 §3.7/§4.7。一个 Map<原始值, {passport, gen}>,按值查护照。
+//
+// 3.0 改进:stampValue 同时调 defaultGraph.addValueToField(value),
+// 让图扫描(value → field)能工作(纯图 fallback 路径)。
+
+import { defaultGraph } from './graph-v2.js';
 
 /** @typedef {bigint} Passport */ // 字段位图,第 i 位 = 字段 i 在集合中
 
@@ -60,6 +65,8 @@ export function stampValue(v, fieldId) {
       valueIndex.set(key, { passport: bit(fieldId), gen: currentGen });
     }
   }
+  // 注:field node values 由 stamp-origin.js 在建 field 节点时同步填入
+  // (见 stamp-origin.js 里的 addValueToField 调用)
   maybeCompact(); // 超阈值自动压缩(物理删过期代)
 }
 
@@ -134,6 +141,10 @@ function maybeCompact() {
 export function bumpGeneration() {
   currentGen++;
   compact(); // 切代际时压缩(旧 session 条目物理删除)
+  // 3.0 设计选择:只清 valueMap(快路径缓存),不清 field.values(图数据)。
+  // 这意味着纯图扫描 fallback 在登出后仍能命中(因为图是 source of truth)。
+  // 这是双引擎设计的核心:值索引是 cache,图是 data。
+  // 真正"清空"应该用 clearProvenance(在 index.js 暴露)+ 显式 defaultGraph.clear()
 }
 export function getCurrentGen() { return currentGen; }
 export function fieldIdToPath(id) {
